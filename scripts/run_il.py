@@ -77,7 +77,7 @@ def _log_step(logger, sim, policy, before_positions, actions, info, done):
     )
 
 
-def run_episode(policy, grid, starts, goals, max_steps, logger=None):
+def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=None):
     """Run one episode. starts/goals: {agent_id: (row, col)}.
 
     Returns a dict with steps / done / all_at_goal / timed_out, the final
@@ -88,10 +88,19 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None):
     (the default), this function is byte-for-byte the pre-logging baseline
     rollout -- no extra bookkeeping is done. When provided, log_step()/
     log_timestep_conflicts() are called once per simulator step; write_steps()
-    /write_summary() are the caller's responsibility (see main() below)."""
+    /write_summary() are the caller's responsibility (see main() below).
+
+    ``monitor``: optional src.common.deadlock_monitor.DeadlockMonitor
+    (Phase 3A, full joint-state repeat only -- see
+    docs/deadlock_definition_v1.md). Same additive-only contract as
+    ``logger``: when None (the default) this function is unaffected; when
+    provided, it only observes positions/conflict_type and never changes
+    actions or stops the rollout."""
     sim = MAPFStepSimulator(cbs_solver_root=None, max_steps=max_steps)
     obs = sim.reset(grid, starts, goals)
     policy.reset(grid, goals)
+    if monitor is not None:
+        monitor.reset(sim._positions, goals)
 
     trajectory = [{aid: tuple(pos) for aid, pos in sim._positions.items()}]
     actions_log = []
@@ -105,6 +114,8 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None):
         trajectory.append({aid: tuple(pos) for aid, pos in sim._positions.items()})
         if logger is not None:
             _log_step(logger, sim, policy, before_positions, actions, info, done)
+        if monitor is not None:
+            monitor.observe_step(info["t"], sim._positions, sim._last_conflict_types)
         if done:
             break
 
@@ -146,6 +157,11 @@ def main(argv=None):
     ap.add_argument("--log", action="store_true",
                      help="write step/summary CSV logs to outputs/logs/ (default: off, "
                           "identical to pre-logging behaviour)")
+    ap.add_argument("--monitor", action="store_true",
+                     help="attach a DeadlockMonitor (Phase 3A, full joint-state repeat "
+                          "only -- see docs/deadlock_definition_v1.md) and print its "
+                          "result; observation only, never changes the rollout "
+                          "(default: off, identical to pre-monitor behaviour)")
     args = ap.parse_args(argv)
 
     policy = NavHintPolicy(args.ckpt)
@@ -157,7 +173,12 @@ def main(argv=None):
         run_id = make_run_id(args.scenario.name, "IL")
         logger = EpisodeLogger(run_id, scenario=args.scenario.name, mode="IL")
 
-    result = run_episode(policy, grid, starts, goals, args.max_steps, logger=logger)
+    monitor = None
+    if args.monitor:
+        from src.common.deadlock_monitor import DeadlockMonitor
+        monitor = DeadlockMonitor()
+
+    result = run_episode(policy, grid, starts, goals, args.max_steps, logger=logger, monitor=monitor)
 
     print(f"checkpoint : {args.ckpt.name}  (hint_mode={policy.hint_mode}, goal_dim={policy.model['goal_dim']})")
     print(f"scenario   : {args.scenario.name}  map={grid.shape}  agents={len(goals)}")
@@ -183,6 +204,13 @@ def main(argv=None):
         )
         print(f"log steps  : {steps_path}")
         print(f"log summary: {summary_path}")
+
+    if monitor is not None:
+        r = monitor.result
+        print(f"monitor    : trigger_type={r.trigger_type} blocking_type={r.blocking_type} "
+              f"first_seen={r.first_seen} trigger_timestep={r.trigger_timestep} period={r.period} "
+              f"overlap_integrity_status={r.overlap_integrity_status} "
+              f"overlap_timesteps={r.overlap_timesteps}")
     return 0
 
 
