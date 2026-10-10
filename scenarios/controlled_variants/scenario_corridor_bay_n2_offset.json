@@ -1,0 +1,9 @@
+{
+  "scenario_id": "scen_corridor_bay_n2_offset",
+  "map_id": "corridor_bay_n2",
+  "map_file": "scenarios/controlled/map_corridor_bay_n2.npy",
+  "agents": [
+    { "agent_id": 0, "start": [0, 2], "goal": [10, 2] },
+    { "agent_id": 1, "start": [6, 2], "goal": [0, 2] }
+  ]
+}

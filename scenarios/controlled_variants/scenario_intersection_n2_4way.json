@@ -1,0 +1,11 @@
+{
+  "scenario_id": "scen_intersection_n2_4way",
+  "map_id": "intersection_n2",
+  "map_file": "scenarios/controlled/map_intersection_n2.npy",
+  "agents": [
+    { "agent_id": 0, "start": [3, 0], "goal": [3, 6] },
+    { "agent_id": 1, "start": [3, 6], "goal": [3, 0] },
+    { "agent_id": 2, "start": [0, 3], "goal": [6, 3] },
+    { "agent_id": 3, "start": [6, 3], "goal": [0, 3] }
+  ]
+}
