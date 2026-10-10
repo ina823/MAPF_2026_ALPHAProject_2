@@ -1,0 +1,10 @@
+{
+  "scenario_id": "exp_corridor_bay_n2_3rdagent_perturbation",
+  "map_id": "corridor_bay_n2",
+  "map_file": "scenarios/controlled/map_corridor_bay_n2.npy",
+  "agents": [
+    { "agent_id": 0, "start": [1, 2], "goal": [7, 2] },
+    { "agent_id": 1, "start": [8, 2], "goal": [2, 2] },
+    { "agent_id": 2, "start": [10, 2], "goal": [6, 2] }
+  ]
+}

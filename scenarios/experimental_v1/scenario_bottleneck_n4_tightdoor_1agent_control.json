@@ -1,0 +1,8 @@
+{
+  "scenario_id": "exp_bottleneck_n4_tightdoor_1agent_control",
+  "map_id": "bottleneck_n4",
+  "map_file": "scenarios/controlled/map_bottleneck_n4.npy",
+  "agents": [
+    { "agent_id": 0, "start": [3, 3], "goal": [5, 3] }
+  ]
+}
