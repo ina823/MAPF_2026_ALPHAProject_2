@@ -1,5 +1,6 @@
 """Deadlock Monitor v1 -- Phase 3A (full joint-state repeat) + Phase 3B-1
-(persistent_conflict candidate signal).
+(persistent_conflict candidate signal) + Phase 3B-2A (no_progress candidate
+signal).
 
 Scope of this module (see docs/deadlock_definition_v1.md for the full
 vocabulary this implements a slice of):
@@ -23,10 +24,13 @@ vocabulary this implements a slice of):
     an integrity issue is recorded but never suppresses or short-circuits
     the repeat-detection logic (a KI-1-affected episode still gets a normal
     trigger_type computed; see docs/deadlock_definition_v1.md Section 8.1's
-    self-consistency table). `invalid_distance_rows` is explicitly NOT
-    computed here (it needs the policy's BFS goal-distance field, which
-    this module never touches) and `overlap_integrity_status` must never be
-    read as a full integrity clearance.
+    self-consistency table). `invalid_distance_rows` (the offline, whole-
+    episode integrity counter) is explicitly NOT computed here -- as of
+    Phase 3B-2A this module does receive per-agent BFS goal-distance values
+    as an *optional input* (for the no_progress signal below), but it never
+    computes that distance field itself, and still does not reproduce
+    `invalid_distance_rows` as its own tracked field. `overlap_integrity_status`
+    must never be read as a full integrity clearance.
   * (Phase 3B-1) Tracks a `persistent_conflict` candidate signal: the
     current, *live* consecutive-step streak of the same reconstructed
     conflict key (vertex: contested cell + involved agents; edge: swapping
@@ -60,18 +64,58 @@ vocabulary this implements a slice of):
     missing, this module never guesses a key: it records the step as
     incomplete (`persistent_conflict_incomplete_steps`) and lets any
     in-progress streak end, rather than fabricating continuity.
+  * (Phase 3B-2A) Tracks a `no_progress` candidate signal: for each agent,
+    the current, *live* consecutive-step streak of
+    `goal_distance_before - goal_distance_after <= 0` while that agent is
+    "active" (`goal_distance_before > 0` -- the same gate
+    `scripts/analyze_failure_logs.py::_active()` uses, Section 3.1/3.2),
+    exposed as `current_no_progress_streaks` (a tuple of
+    `(agent_id, streak)` pairs, one per agent with a live streak >= 1 --
+    agents at or past their goal, or currently advancing, simply do not
+    appear). This is a **fourth, independent observational field**: it
+    does not read, gate, or get gated by `trigger_type`/`blocking_type`
+    or the persistent_conflict fields, and is itself cause-agnostic --
+    it does not care *why* an agent's distance failed to improve (WAIT,
+    a wall-block, a vertex/edge conflict all count identically, matching
+    the offline definition exactly); that "why" is what the separate
+    persistent_conflict signal (Phase 3B-1) answers instead. It must
+    never be read as the offline, whole-episode `no_progress_steps`
+    (a total count, not a streak) or `max_no_progress_span` (the
+    episode's single largest streak, only knowable once the episode
+    ends) -- same "online current value vs. offline final aggregate"
+    separation as persistent_conflict (Section 7.1(c)).
+    Computing it requires each agent's BFS goal distance *before* this
+    step and *after* it (`goal_distance_before`/`goal_distance_after`,
+    the same raw values `scripts/run_il.py::_log_step` already computes
+    from `policy._dist` and feeds to `EpisodeLogger` -- this module still
+    never computes or looks at a BFS distance field itself; the caller
+    always supplies the already-computed numbers). Both are optional,
+    keyword-only inputs to `observe_step()`, independent of
+    `current_positions`/`intended_positions` above; omitting them leaves
+    `no_progress_status="NOT_COMPUTED"`. Each agent is evaluated strictly
+    on its *own* data: one agent missing from the input, or reporting
+    `goal_distance_after < 0` (BFS-unreachable -- which would otherwise
+    make `before - after` spuriously large and positive, i.e. look like a
+    big advance, if trusted naively), is treated as incomplete for *that
+    agent only* this step (counted in `no_progress_incomplete_steps`,
+    that agent's streak ends) -- every other agent's streak is computed
+    normally and is never reset just because a different agent's data was
+    unusable.
   * Does not implement: Trigger-Partial, K_label continuation, CBS
-    recovery, Hybrid runner integration, or a `no_progress` candidate
-    signal (deferred to a later phase -- see `DeadlockMonitorConfig`).
+    recovery, or Hybrid runner integration (see `DeadlockMonitorConfig`).
 
 This module only *observes* -- it never changes an action, never stops a
 rollout, and never touches `src/simulator/mapf_step_simulator.py`,
 `src/il/policy.py`, or `src/common/episode_logger.py`'s existing field
 semantics. `scripts/run_il.py`'s behaviour with `monitor=None` (the
-default) is byte-for-byte unaffected. The persistent_conflict signal keeps
-this neutrality too: it only ever reads the `current_positions`/
-`intended_positions` dicts a caller chooses to pass in, and never reaches
-into a policy object to compute them itself.
+default) is byte-for-byte unaffected -- as of Phase 3B-2A this is still
+true with `monitor=DeadlockMonitor()` attached, too, since `run_il.py`
+does not yet pass `goal_distance_before`/`goal_distance_after` to
+`observe_step()` (that wiring is deliberately deferred to a later,
+separately-approved step). The persistent_conflict and no_progress
+signals both keep this neutrality: they only ever read the dicts a caller
+chooses to pass in, and never reach into a policy or simulator object to
+compute anything themselves.
 """
 
 from __future__ import annotations
@@ -162,6 +206,36 @@ class DeadlockMonitorResult:
     current_persistent_conflict_streak: int = 0
     current_persistent_conflict_key: ConflictKey | None = None
 
+    # -- Phase 3B-2A: no_progress candidate signal (observational only --
+    # see the module docstring; never a Trigger, never a Label, never
+    # feeds back into any field above, and fully independent of the
+    # persistent_conflict fields too). --
+    # "NOT_COMPUTED" until observe_step() is ever called with either
+    # goal_distance_before or goal_distance_after; "OK" from then on (even
+    # on a step with zero active no-progress agents).
+    no_progress_status: str = "NOT_COMPUTED"  # "NOT_COMPUTED" | "OK"
+    # Count of (step, agent) instances where that agent's own
+    # goal_distance_before/after could not be used -- missing from the
+    # input, or goal_distance_after < 0 (BFS-unreachable, which would
+    # otherwise make before-after spuriously look like a large advance).
+    # That agent's streak ends; every OTHER agent's streak this same step
+    # is completely unaffected.
+    no_progress_incomplete_steps: int = 0
+    # (agent_id, streak) pairs, one per agent whose live, current
+    # consecutive "active and goal_distance did not improve" streak is
+    # >= 1 this call -- an agent at/past its goal, making genuine
+    # progress, or with insufficient data this step simply has no entry
+    # (equivalent to streak 0). This is the online, current-streak
+    # counterpart of analyze_failure_logs.py's offline, whole-episode
+    # no_progress_steps (a total COUNT, not a streak) and
+    # max_no_progress_span (the episode's single largest streak, only
+    # knowable once the episode ends) -- none of these three are the same
+    # quantity and must never be substituted for one another. Unlike
+    # persistent_conflict's single-best-key simplification, EVERY
+    # currently-affected agent is reported here (no_progress is a purely
+    # per-agent signal with no multi-agent key to collapse).
+    current_no_progress_streaks: Tuple[Tuple[int, int], ...] = field(default_factory=tuple)
+
 
 class DeadlockMonitor:
     """Observes a rollout step by step. Never alters actions or stops it.
@@ -188,6 +262,12 @@ class DeadlockMonitor:
         # from scratch each observe_step() call (keys absent this step are
         # dropped -- a streak that does not recur is, by definition, over).
         self._persistent_conflict_streaks: Dict[ConflictKey, int] = {}
+        # Phase 3B-2A: agent_id -> current live no-progress streak. Each
+        # agent is rebuilt independently every observe_step() call (an
+        # agent absent this step -- at goal, advancing, or with
+        # insufficient data -- is dropped; this never touches any other
+        # agent's entry).
+        self._no_progress_streaks: Dict[int, int] = {}
 
     @staticmethod
     def _joint_state(positions: Dict[int, Position]) -> JointState:
@@ -211,6 +291,7 @@ class DeadlockMonitor:
         self._conflict_log = {}
         self._result = DeadlockMonitorResult()
         self._persistent_conflict_streaks = {}
+        self._no_progress_streaks = {}
         self._goal_state = self._joint_state(goals)
         s0 = self._joint_state(initial_positions)
         if s0 != self._goal_state:
@@ -224,6 +305,8 @@ class DeadlockMonitor:
         *,
         current_positions: Dict[int, Position] | None = None,
         intended_positions: Dict[int, Position] | None = None,
+        goal_distance_before: Dict[int, int] | None = None,
+        goal_distance_after: Dict[int, int] | None = None,
     ) -> DeadlockMonitorResult:
         """Call once per simulator step, after `sim.step()` returns.
 
@@ -244,7 +327,14 @@ class DeadlockMonitor:
         must be supplied together to compute the persistent_conflict
         signal for this step; if either is omitted, the signal is left at
         its previous value for this call (see `_update_persistent_conflict`).
-        """
+
+        `goal_distance_before`/`goal_distance_after` (Phase 3B-2A, optional,
+        keyword-only): each agent's fixed BFS goal distance evaluated at
+        its position *before* this step and *after* it -- the same raw
+        values `scripts/run_il.py::_log_step` computes from `policy._dist`.
+        Independent of `current_positions`/`intended_positions` above;
+        each agent is evaluated on its own data only (see
+        `_update_no_progress`)."""
         state = self._joint_state(positions)
         self._conflict_log[timestep] = dict(conflict_types)
 
@@ -261,6 +351,12 @@ class DeadlockMonitor:
         # Continues to update even after trigger_type has settled to
         # "FULL", same as overlap tracking above.
         self._update_persistent_conflict(positions, conflict_types, current_positions, intended_positions)
+
+        # Phase 3B-2A: likewise tracked unconditionally, in parallel with --
+        # and fully independent of -- everything above (trigger_type,
+        # blocking_type, AND persistent_conflict). Continues to update
+        # even after trigger_type has settled to "FULL".
+        self._update_no_progress(positions, goal_distance_before, goal_distance_after)
 
         if self._result.trigger_type == "FULL":
             return self._snapshot()  # first repeat only; already settled
@@ -456,6 +552,90 @@ class DeadlockMonitor:
         else:
             self._result.current_persistent_conflict_streak = 0
             self._result.current_persistent_conflict_key = None
+
+    def _update_no_progress(
+        self,
+        positions: Dict[int, Position],
+        goal_distance_before: Dict[int, int] | None,
+        goal_distance_after: Dict[int, int] | None,
+    ) -> None:
+        """Phase 3B-2A. Advances each agent's live, current no-progress
+        streak independently.
+
+        Not computed at all (status stays/becomes "NOT_COMPUTED") if the
+        caller never supplies either input on any call. Once engaged
+        ("OK"), each agent is judged purely on its OWN
+        `goal_distance_before[aid]`/`goal_distance_after[aid]`:
+          * missing from either dict this call -> that agent's data is
+            insufficient this step. Counted in
+            `no_progress_incomplete_steps`; that agent's streak ends.
+            Every OTHER agent is completely unaffected -- one agent's
+            missing data is never allowed to reset a different agent's
+            streak (this is a per-agent decision, unlike
+            persistent_conflict's per-step all-or-nothing one, because
+            no_progress needs no cross-agent information at all).
+          * `before <= 0` -> not "active" (already at/past its goal, or
+            `before` itself is BFS-unreachable/-1) -- same gate
+            `scripts/analyze_failure_logs.py::_active()` uses. Dropped
+            (streak ends), not an error.
+          * `after < 0` (BFS-unreachable) while `before > 0` -- trusting
+            `before - after` naively here would read as a large, clearly
+            wrong "advance" (subtracting a negative). Treated the same as
+            missing data: insufficient, counted as incomplete, streak
+            ends. The offline analyzer's `progress` field has no
+            equivalent guard against this; this is a deliberate online
+            safety improvement, not a reproduction of an offline quirk.
+          * otherwise, `progress = before - after`: `progress <= 0`
+            (unchanged OR got worse -- a WAIT, a wall/vertex/edge
+            conflict bounce-back, or a genuine temporary detour away from
+            the goal are all counted identically, matching
+            `analyze_failure_logs.py`'s own cause-agnostic definition
+            exactly) increments that agent's streak; `progress > 0` (a
+            real advance, including finally reaching the goal this step)
+            ends it.
+
+        Streaks are rebuilt from scratch each call, per agent: an agent
+        absent from this step's result (dropped by any branch above)
+        simply has no entry next time unless it starts a fresh streak --
+        this is what makes the reported value a live "current streak",
+        never a cumulative whole-episode count or final max (those
+        quantities belong to `scripts/analyze_failure_logs.py`, offline,
+        after the episode ends -- Section 7.1(c)).
+        """
+        if goal_distance_before is None and goal_distance_after is None:
+            return  # feature not engaged on this call -- leave status as-is
+
+        self._result.no_progress_status = "OK"
+
+        new_streaks: Dict[int, int] = {}
+        incomplete_this_step = False
+        for aid in sorted(positions):
+            before_missing = goal_distance_before is None or aid not in goal_distance_before
+            after_missing = goal_distance_after is None or aid not in goal_distance_after
+            if before_missing or after_missing:
+                incomplete_this_step = True
+                continue  # insufficient data -- do not guess; streak ends
+
+            before = goal_distance_before[aid]
+            after = goal_distance_after[aid]
+            if before <= 0:
+                continue  # not active (at/past goal, or before itself unreachable)
+            if after < 0:
+                # before > 0 but after is BFS-unreachable -- before-after
+                # would spuriously read as a large advance. Insufficient,
+                # not guessed.
+                incomplete_this_step = True
+                continue
+
+            progress = before - after
+            if progress <= 0:
+                new_streaks[aid] = self._no_progress_streaks.get(aid, 0) + 1
+            # else progress > 0: genuine advance -- dropped (streak ends)
+
+        if incomplete_this_step:
+            self._result.no_progress_incomplete_steps += 1
+        self._no_progress_streaks = new_streaks
+        self._result.current_no_progress_streaks = tuple(sorted(new_streaks.items()))
 
     @property
     def result(self) -> DeadlockMonitorResult:

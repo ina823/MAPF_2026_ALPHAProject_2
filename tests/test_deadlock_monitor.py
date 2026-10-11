@@ -31,6 +31,7 @@ from pathlib import Path
 
 from src.common import spec
 from src.common.deadlock_monitor import DeadlockMonitor
+from src.il.nav_hint import bfs_dist
 from src.simulator.mapf_step_simulator import MAPFStepSimulator
 from src.common.scenario_loader import load_map_generator_scenario
 
@@ -105,6 +106,39 @@ def replay_with_persistent_conflict(grid, starts, goals, actions_per_agent, max_
         r = monitor.observe_step(
             info["t"], sim._positions, sim._last_conflict_types,
             current_positions=current, intended_positions=intended)
+        per_step.append(r)
+        if done:
+            break
+    return per_step
+
+
+def replay_with_no_progress(grid, starts, goals, actions_per_agent, max_steps):
+    """Phase 3B-2A replay helper. Like `replay()`, but runs the full
+    `max_steps` (not stopping at the first Full-repeat trigger) and feeds
+    `goal_distance_before`/`goal_distance_after` into `observe_step()`
+    every step, computed with the real `bfs_dist()` function
+    (`src.il.nav_hint.bfs_dist`) -- the exact same function
+    `src.il.policy.NavHintPolicy.reset()` uses to build `policy._dist`,
+    looked up at the real pre-/post-step positions exactly the way
+    `scripts/run_il.py::_log_step` does. This needs no torch/checkpoint
+    (pure BFS over the real scenario grid), so it stays REAL data, not
+    SYNTHETIC, even without loading the actual NavHintPolicy.
+    Returns the list of per-step `DeadlockMonitorResult` snapshots."""
+    dist_fields = {aid: bfs_dist(grid, goals[aid]) for aid in goals}
+    sim = MAPFStepSimulator(cbs_solver_root=None, max_steps=max_steps)
+    sim.reset(grid, dict(starts), dict(goals))
+    monitor = DeadlockMonitor()
+    monitor.reset(sim._positions, goals)
+    per_step = []
+    for t in range(max_steps):
+        current = dict(sim._positions)
+        before = {aid: int(dist_fields[aid][current[aid][0], current[aid][1]]) for aid in current}
+        actions = {aid: (seq[t] if t < len(seq) else WAIT) for aid, seq in actions_per_agent.items()}
+        obs, done, info = sim.step(actions)
+        after = {aid: int(dist_fields[aid][pos[0], pos[1]]) for aid, pos in sim._positions.items()}
+        r = monitor.observe_step(
+            info["t"], sim._positions, sim._last_conflict_types,
+            goal_distance_before=before, goal_distance_after=after)
         per_step.append(r)
         if done:
             break
@@ -666,6 +700,288 @@ class TestPersistentConflictSynthetic(unittest.TestCase):
         self.assertEqual(r.persistent_conflict_status, "OK")
         self.assertEqual(r.persistent_conflict_incomplete_steps, 1)
         self.assertEqual(r.current_persistent_conflict_streak, 0)
+
+
+class TestNoProgressCandidateReal(unittest.TestCase):
+    """Phase 3B-2A: no_progress candidate signal, cross-checked against
+    REAL scenario files + the real, unmodified MAPFStepSimulator + the
+    real `bfs_dist()` function (same REAL-data discipline as
+    TestRealCrossCheck/TestPersistentConflictCandidateReal above)."""
+
+    def test_corridor_bay_n2_no_progress_streak_grows_for_both_agents(self):
+        """Approval point 3 (정상 전진 vs 정체) + point 2 (naming/semantics
+        separated from offline). Before the freeze (t=1..4) both agents
+        make genuine BFS-distance progress every step -> streak stays
+        empty. From t=5 (the confirmed vertex bounce-back) onward, both
+        agents' positions -- and therefore their BFS distance -- stop
+        changing every step -> both streaks climb together."""
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        actions = {0: [RIGHT] * 8, 1: [LEFT] * 8}
+        per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=8)
+        streaks = [r.current_no_progress_streaks for r in per_step]
+        self.assertEqual(streaks, [
+            (), (), (), (),
+            ((0, 1), (1, 1)),
+            ((0, 2), (1, 2)),
+            ((0, 3), (1, 3)),
+            ((0, 4), (1, 4)),
+        ])
+        for r in per_step:
+            self.assertEqual(r.no_progress_status, "OK")
+            self.assertEqual(r.no_progress_incomplete_steps, 0)
+        # Phase 3A/3B-1 fields are completely unaffected (approval point 5).
+        self.assertEqual(per_step[4].trigger_type, "FULL")
+        self.assertEqual(per_step[4].first_seen, 4)
+        self.assertEqual(per_step[4].blocking_type, "VERTEX")
+
+    def test_intersection_n2_no_progress_streak(self):
+        """Approval point 8 (Intersection)."""
+        grid, starts, goals = load("scenarios/controlled/scenario_intersection_n2.json")
+        actions = {0: [RIGHT] * 6, 1: [DOWN] * 6}
+        per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=6)
+        streaks = [r.current_no_progress_streaks for r in per_step]
+        self.assertEqual(streaks, [
+            (),
+            ((0, 1), (1, 1)),
+            ((0, 2), (1, 2)),
+            ((0, 3), (1, 3)),
+            ((0, 4), (1, 4)),
+            ((0, 5), (1, 5)),
+        ])
+
+    def test_bottleneck_n4_no_progress_streak_all_four_agents(self):
+        """Approval point 8 (Bottleneck) -- all 4 agents stall together."""
+        grid, starts, goals = load("scenarios/controlled/scenario_bottleneck_n4.json")
+        actions = {
+            0: [RIGHT, DOWN, DOWN, DOWN, DOWN, DOWN],
+            1: [UP, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT],
+            2: [DOWN, DOWN, DOWN, DOWN, DOWN, DOWN],
+            3: [UP, UP, UP, UP, UP, UP],
+        }
+        per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=6)
+        streaks = [r.current_no_progress_streaks for r in per_step]
+        self.assertEqual(streaks, [
+            (),
+            ((0, 1), (1, 1), (2, 1), (3, 1)),
+            ((0, 2), (1, 2), (2, 2), (3, 2)),
+            ((0, 3), (1, 3), (2, 3), (3, 3)),
+            ((0, 4), (1, 4), (2, 4), (3, 4)),
+            ((0, 5), (1, 5), (2, 5), (3, 5)),
+        ])
+
+    def test_corridor_3rdagent_perturbation_excludes_agent_already_at_goal(self):
+        """Approval point 3 (목표 도달 agent 처리) + point 8 (edge 사례).
+        Agent 2 reaches its own goal at t=4 and WAITs from then on; it must
+        NEVER appear in current_no_progress_streaks (goal_distance_before
+        == 0 from that point on -- not "active"), even though it is
+        stationary exactly like the two stalled agents. Only agents 0/1
+        (still active, edge-blocked from t=4) accumulate a streak."""
+        grid, starts, goals = load(
+            "scenarios/experimental_v1/scenario_corridor_bay_n2_3rdagent_perturbation.json")
+        actions = {
+            0: [RIGHT] * 8,
+            1: [LEFT] * 8,
+            2: [LEFT, LEFT, LEFT, LEFT, WAIT, WAIT, WAIT, WAIT],
+        }
+        per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=8)
+        streaks = [r.current_no_progress_streaks for r in per_step]
+        self.assertEqual(streaks, [
+            (), (), (),
+            ((0, 1), (1, 1)),
+            ((0, 2), (1, 2)),
+            ((0, 3), (1, 3)),
+            ((0, 4), (1, 4)),
+            ((0, 5), (1, 5)),
+        ])
+        for s in streaks:
+            self.assertNotIn(2, dict(s))  # agent 2 never appears
+
+    def test_success_cycle_ring_n4_never_produces_a_false_candidate(self):
+        """Approval point 8: a clean success run (every step is genuine
+        BFS-distance progress for every active agent) must never show a
+        no_progress streak."""
+        grid, starts, goals = load("scenarios/controlled/scenario_cycle_ring_n4.json")
+        actions = {0: [RIGHT, RIGHT], 1: [DOWN, DOWN], 2: [LEFT, LEFT], 3: [UP, UP]}
+        per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=2)
+        for r in per_step:
+            self.assertEqual(r.current_no_progress_streaks, ())
+            self.assertEqual(r.no_progress_status, "OK")
+            self.assertEqual(r.no_progress_incomplete_steps, 0)
+        self.assertEqual(per_step[-1].trigger_type, "NONE")  # Phase 3A unaffected
+
+
+class TestNoProgressKI1Separation(unittest.TestCase):
+    """Approval point 8: KI-1 (overlap) instances get their own class, kept
+    separate from TestNoProgressCandidateReal's accuracy-style assertions,
+    same discipline as TestKnownQuirkKI1Separation /
+    TestPersistentConflictKI1Separation above
+    (docs/deadlock_definition_v1.md Section 8.1)."""
+
+    def test_bottleneck_n4_convoy_overlap_does_not_suppress_no_progress(self):
+        grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
+        actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
+        per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=4)
+        last = per_step[-1]
+        self.assertEqual(last.overlap_integrity_status, "INTEGRITY_ISSUE")
+        self.assertGreater(last.overlap_timesteps, 0)
+        # no_progress tracking must still run normally alongside the KI-1
+        # overlap, exactly like trigger_type/blocking_type already do.
+        self.assertEqual(last.trigger_type, "FULL")
+        self.assertEqual(last.no_progress_status, "OK")
+        self.assertEqual(last.no_progress_incomplete_steps, 0)
+        self.assertEqual(len(dict(last.current_no_progress_streaks)), 4)
+
+
+class TestNoProgressSynthetic(unittest.TestCase):
+    """SYNTHETIC (see the module-level docstring's REAL/SYNTHETIC
+    distinction): hand-fed inputs used to exercise Monitor logic paths
+    that have no real-CSV example -- in particular, a transient detour
+    followed by recovery, which docs/deadlock_definition_v1.md Section 6
+    already records as a real-data evidentiary gap ("zero examples ...
+    of a successful episode that experienced an active block/WAIT/
+    no-progress window and then recovered") -- so this case can only be
+    exercised synthetically, exactly as flagged in the 3B-2 approval."""
+
+    def test_not_computed_by_default_when_inputs_never_supplied(self):
+        """Approval point 7: calling observe_step() with only the original
+        3 positional arguments (as every pre-3B-2A caller does, including
+        every 3B-1 caller that does not pass goal_distance_*) must leave
+        the no_progress fields at their inert defaults."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        r = m.observe_step(1, {0: (1, 0)}, {0: "none"})
+        self.assertEqual(r.no_progress_status, "NOT_COMPUTED")
+        self.assertEqual(r.current_no_progress_streaks, ())
+        self.assertEqual(r.no_progress_incomplete_steps, 0)
+        self.assertEqual(r.trigger_type, "NONE")
+
+    def test_transient_detour_then_recovery_is_not_a_false_candidate(self):
+        """SYNTHETIC transient-recovery case (approval point 8, explicit
+        requirement). An agent's BFS distance INCREASES for two steps (a
+        detour away from the goal -- counted as no-progress, matching
+        analyze_failure_logs.py's cause-agnostic `progress <= 0` exactly),
+        then decreases again (genuine advance) -> the streak must climb
+        during the detour and drop back to 0 (not merely plateau) the
+        instant real progress resumes."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        # t=1: distance 5 -> 6 (detour, got worse) -> no-progress streak=1.
+        r1 = m.observe_step(1, {0: (0, 0)}, {0: "none"},
+                             goal_distance_before={0: 5}, goal_distance_after={0: 6})
+        self.assertEqual(r1.current_no_progress_streaks, ((0, 1),))
+        # t=2: distance 6 -> 6 (still stuck, unchanged) -> streak=2.
+        r2 = m.observe_step(2, {0: (0, 0)}, {0: "none"},
+                             goal_distance_before={0: 6}, goal_distance_after={0: 6})
+        self.assertEqual(r2.current_no_progress_streaks, ((0, 2),))
+        # t=3: distance 6 -> 3 (real recovery) -> streak resets to 0 (dropped).
+        r3 = m.observe_step(3, {0: (0, 0)}, {0: "none"},
+                             goal_distance_before={0: 6}, goal_distance_after={0: 3})
+        self.assertEqual(r3.current_no_progress_streaks, ())
+        self.assertEqual(r3.no_progress_status, "OK")
+        self.assertEqual(r3.no_progress_incomplete_steps, 0)
+
+    def test_wait_and_every_conflict_type_count_identically(self):
+        """Approval point 3: WAIT, and a wall/vertex/edge conflict
+        bounce-back, must all be treated identically by no_progress (it is
+        cause-agnostic by design -- distinguishing *why* is
+        persistent_conflict's job, Phase 3B-1). Four independent agents,
+        one per cause, all with before==after (no distance change) in the
+        same step, must all accumulate streak=1 identically regardless of
+        `conflict_type`."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0), 1: (1, 0), 2: (2, 0), 3: (3, 0)},
+                 goals={0: (9, 0), 1: (9, 1), 2: (9, 2), 3: (9, 3)})
+        r = m.observe_step(
+            1, {0: (0, 0), 1: (1, 0), 2: (2, 0), 3: (3, 0)},
+            {0: "none", 1: "wall", 2: "vertex", 3: "edge"},
+            goal_distance_before={0: 9, 1: 9, 2: 9, 3: 9},
+            goal_distance_after={0: 9, 1: 9, 2: 9, 3: 9})
+        self.assertEqual(r.current_no_progress_streaks, ((0, 1), (1, 1), (2, 1), (3, 1)))
+
+    def test_agent_at_or_past_goal_is_excluded(self):
+        """Approval point 3 (목표 도달): goal_distance_before <= 0 (already
+        at goal) must never produce a streak, even though the agent is
+        stationary -- same gate as offline `_active()`."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0), 1: (5, 5)}, goals={0: (0, 1), 1: (9, 9)})
+        r = m.observe_step(
+            1, {0: (0, 0), 1: (5, 5)}, {0: "none", 1: "none"},
+            goal_distance_before={0: 0, 1: 9}, goal_distance_after={0: 0, 1: 9})
+        self.assertEqual(r.current_no_progress_streaks, ((1, 1),))  # only agent 1
+
+    def test_before_unreachable_is_excluded_not_incomplete(self):
+        """Approval point 4: `before < 0` (BFS-unreachable from this cell)
+        is treated the same as `before == 0` -- dropped as "not active",
+        NOT counted as an incomplete-data step. Distinguishing this from
+        genuinely missing/insufficient data matters: an unreachable cell
+        is a normal (if unusual) observation, not a data problem."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        r = m.observe_step(1, {0: (0, 0)}, {0: "none"},
+                            goal_distance_before={0: -1}, goal_distance_after={0: -1})
+        self.assertEqual(r.current_no_progress_streaks, ())
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.no_progress_incomplete_steps, 0)
+
+    def test_after_unreachable_is_incomplete_not_a_guessed_advance(self):
+        """Approval point 4: `before > 0` but `after < 0` must NOT be
+        naively computed as `before - after` (which would look like a
+        large, spurious advance) -- it must be flagged incomplete instead.
+        This is a deliberate online safety check beyond what the offline
+        analyzer's own `progress` field guards against."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        r = m.observe_step(1, {0: (1, 0)}, {0: "none"},
+                            goal_distance_before={0: 5}, goal_distance_after={0: -1})
+        self.assertEqual(r.current_no_progress_streaks, ())
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.no_progress_incomplete_steps, 1)
+
+    def test_one_agent_missing_data_does_not_reset_another_agents_streak(self):
+        """Approval point 4 (core requirement): agent 1's missing entry
+        must NOT reset agent 0's already-building streak."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0), 1: (5, 5)}, goals={0: (9, 9), 1: (9, 8)})
+        r1 = m.observe_step(
+            1, {0: (0, 0), 1: (5, 6)}, {0: "none", 1: "none"},
+            goal_distance_before={0: 5, 1: 9}, goal_distance_after={0: 5, 1: 8})
+        self.assertEqual(r1.current_no_progress_streaks, ((0, 1),))  # agent0 stuck, agent1 advanced
+        self.assertEqual(r1.no_progress_incomplete_steps, 0)
+        # Step 2: agent 1 is missing from goal_distance_after entirely;
+        # agent 0's data is present and still shows no progress.
+        r2 = m.observe_step(
+            2, {0: (0, 0), 1: (5, 6)}, {0: "none", 1: "none"},
+            goal_distance_before={0: 5, 1: 8}, goal_distance_after={0: 5})
+        self.assertEqual(r2.no_progress_incomplete_steps, 1)
+        self.assertEqual(r2.current_no_progress_streaks, ((0, 2),))  # agent0 streak kept growing
+        self.assertNotIn(1, dict(r2.current_no_progress_streaks))  # agent1 dropped, not guessed
+
+    def test_only_one_of_the_pair_supplied_is_also_incomplete(self):
+        """Approval point 4: goal_distance_before/after omitted entirely
+        for an agent counts as missing, same as a partially-missing dict."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        r = m.observe_step(1, {0: (1, 0)}, {0: "none"},
+                            goal_distance_before={0: 5})  # goal_distance_after omitted
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.no_progress_incomplete_steps, 1)
+        self.assertEqual(r.current_no_progress_streaks, ())
+
+    def test_result_snapshot_is_not_aliased_across_steps(self):
+        """Approval point 6: confirms the mutable-field aliasing fix
+        extends correctly to the new tuple-valued
+        current_no_progress_streaks field -- each returned snapshot must
+        keep ITS OWN value even as later calls change the live state."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        r1 = m.observe_step(1, {0: (0, 0)}, {0: "none"},
+                             goal_distance_before={0: 5}, goal_distance_after={0: 5})
+        r2 = m.observe_step(2, {0: (0, 0)}, {0: "none"},
+                             goal_distance_before={0: 5}, goal_distance_after={0: 5})
+        self.assertEqual(r1.current_no_progress_streaks, ((0, 1),))
+        self.assertEqual(r2.current_no_progress_streaks, ((0, 2),))
+        # r1 must NOT have silently become equal to r2's later value.
+        self.assertNotEqual(r1.current_no_progress_streaks, r2.current_no_progress_streaks)
 
 
 if __name__ == "__main__":
