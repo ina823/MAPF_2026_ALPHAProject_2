@@ -1683,5 +1683,355 @@ class TestRunIlPersistentConflictWiring(unittest.TestCase):
         self.assertEqual(result_no_monitor["final_positions"], result_with_monitor["final_positions"])
 
 
+class TestMonitorSidecarCsv(unittest.TestCase):
+    """Phase 3B-4: the <run_id>_monitor.csv sidecar
+    (EpisodeLogger.write_monitor()), written once per episode from
+    scripts/run_il.py::main() only when BOTH --log and --monitor are
+    active. These read the ACTUAL written CSV back from disk, not just
+    DeadlockMonitorResult, since the point of this phase is the file
+    itself."""
+
+    @staticmethod
+    def _sidecar_row(result, run_id="x", scenario="s", mode="IL"):
+        import csv
+        import io
+        import tempfile
+
+        from src.common.episode_logger import EpisodeLogger
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger(run_id, scenario=scenario, mode=mode, out_dir=tmp)
+            path = logger.write_monitor(result)
+            text = path.read_text(encoding="utf-8")
+        return next(csv.DictReader(io.StringIO(text)))
+
+    def test_corridor_bay_n2_sidecar_real_checkpoint(self):
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_corridor_bay_n2.json")
+        monitor = DeadlockMonitor()
+        run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=20,
+                            logger=None, monitor=monitor)
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["trigger_type"], "FULL")
+        self.assertEqual(row["trigger_reason_code"], "TRIGGER_FULL_REPEAT")
+        self.assertEqual(row["trigger_timestep"], "5")
+        self.assertEqual(row["first_seen"], "4")
+        self.assertEqual(row["period"], "1")
+        self.assertEqual(row["blocking_type"], "VERTEX")
+        self.assertEqual(row["blocking_agents"], "0;1")
+        self.assertEqual(row["overlap_integrity_status"], "CLEAN")
+        self.assertEqual(row["overlap_timesteps"], "0")
+        self.assertEqual(row["persistent_conflict_status"], "OK")
+        self.assertEqual(row["persistent_conflict_incomplete_steps"], "0")
+        self.assertEqual(row["current_persistent_conflict_streak"], "16")  # 20 - 5 + 1
+        self.assertEqual(row["current_persistent_conflict_key_type"], "vertex")
+        self.assertEqual(row["current_persistent_conflict_key_location"], "2,5")
+        self.assertEqual(row["current_persistent_conflict_key_agents"], "0;1")
+        self.assertEqual(row["no_progress_status"], "OK")
+        self.assertEqual(row["no_progress_incomplete_steps"], "0")
+        self.assertEqual(row["current_no_progress_streaks"], "0=16;1=16")
+
+    def test_intersection_n2_sidecar_real_checkpoint(self):
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_intersection_n2.json")
+        monitor = DeadlockMonitor()
+        run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=10,
+                            logger=None, monitor=monitor)
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["trigger_timestep"], "2")
+        self.assertEqual(row["first_seen"], "1")
+        self.assertEqual(row["blocking_type"], "VERTEX")
+        self.assertEqual(row["current_persistent_conflict_streak"], "9")  # 10 - 2 + 1
+        self.assertEqual(row["current_persistent_conflict_key_location"], "3,3")
+        self.assertEqual(row["current_no_progress_streaks"], "0=9;1=9")
+
+    def test_bottleneck_n4_sidecar_real_checkpoint(self):
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_bottleneck_n4.json")
+        monitor = DeadlockMonitor()
+        run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=10,
+                            logger=None, monitor=monitor)
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["trigger_timestep"], "2")
+        self.assertEqual(row["current_persistent_conflict_streak"], "9")  # 10 - 2 + 1
+        self.assertEqual(row["current_persistent_conflict_key_location"], "2,7")
+        self.assertEqual(row["current_persistent_conflict_key_agents"], "2;3")
+        self.assertEqual(row["current_no_progress_streaks"], "0=9;1=9;2=9;3=9")
+
+    def test_edge_perturbation_sidecar(self):
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load(
+            "scenarios/experimental_v1/scenario_corridor_bay_n2_3rdagent_perturbation.json")
+        actions = {
+            0: [RIGHT] * 8,
+            1: [LEFT] * 8,
+            2: [LEFT, LEFT, LEFT, LEFT, WAIT, WAIT, WAIT, WAIT],
+        }
+        monitor = DeadlockMonitor()
+        run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                            max_steps=8, logger=None, monitor=monitor)
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["blocking_type"], "EDGE")
+        self.assertEqual(row["current_persistent_conflict_streak"], "5")
+        self.assertEqual(row["current_persistent_conflict_key_type"], "edge")
+        self.assertEqual(row["current_persistent_conflict_key_location"], "2,4|2,5")
+        self.assertEqual(row["current_persistent_conflict_key_agents"], "0;1")
+
+    def test_success_cycle_ring_n4_sidecar_fields_blank_but_ok(self):
+        """Approval: a success run still has persistent_conflict/
+        no_progress "OK" (the signals WERE evaluated, every step), but
+        with no candidate -- streak columns read "0"/"" (empty streaks
+        tuple), never confused with "NOT_COMPUTED" (see the dedicated
+        NOT_COMPUTED test below for that distinct case)."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_cycle_ring_n4.json")
+        actions = {0: [RIGHT, RIGHT], 1: [DOWN, DOWN], 2: [LEFT, LEFT], 3: [UP, UP]}
+        monitor = DeadlockMonitor()
+        run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                            max_steps=2, logger=None, monitor=monitor)
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["trigger_type"], "NONE")
+        self.assertEqual(row["trigger_reason_code"], "TRIGGER_NONE")
+        self.assertEqual(row["trigger_timestep"], "")
+        self.assertEqual(row["blocking_type"], "NONE")
+        self.assertEqual(row["blocking_agents"], "")
+        self.assertEqual(row["persistent_conflict_status"], "OK")
+        self.assertEqual(row["current_persistent_conflict_streak"], "0")
+        self.assertEqual(row["current_persistent_conflict_key_type"], "")
+        self.assertEqual(row["no_progress_status"], "OK")
+        self.assertEqual(row["current_no_progress_streaks"], "")
+
+    def test_success_smoke_scenario_sidecar_real_checkpoint(self):
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3.json")
+        monitor = DeadlockMonitor()
+        result = run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=160,
+                                     logger=None, monitor=monitor)
+        self.assertTrue(result["all_at_goal"])
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["trigger_type"], "NONE")
+        self.assertEqual(row["current_persistent_conflict_streak"], "0")
+        self.assertEqual(row["current_no_progress_streaks"], "")
+
+    def test_ki1_bottleneck_convoy_sidecar_not_suppressed_by_overlap(self):
+        """KI-1 kept in its own test, per this file's established
+        separation discipline (docs/deadlock_definition_v1.md Section
+        8.1) -- never pooled with the accuracy-style assertions above."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
+        actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
+        monitor = DeadlockMonitor()
+        run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                            max_steps=4, logger=None, monitor=monitor)
+        row = self._sidecar_row(monitor.result)
+        self.assertEqual(row["overlap_integrity_status"], "INTEGRITY_ISSUE")
+        self.assertEqual(row["overlap_timesteps"], "4")
+        self.assertEqual(row["trigger_type"], "FULL")  # not suppressed by overlap
+        self.assertEqual(row["current_persistent_conflict_streak"], "3")
+        self.assertEqual(row["current_persistent_conflict_key_agents"], "0;1;2;3")
+        self.assertEqual(row["current_no_progress_streaks"], "0=3;1=4;2=4;3=3")
+
+    def test_not_computed_status_writes_blank_not_zero(self):
+        """Approval condition 3: a blank cell must mean "not computed",
+        never "0"/"computed and found none" -- directly exercises
+        DeadlockMonitor's default, pre-engagement state (observe_step()
+        called with only its 3 original positional arguments)."""
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0)}, goals={0: (9, 9)})
+        r = m.observe_step(1, {0: (1, 0)}, {0: "none"})
+        row = self._sidecar_row(r)
+        self.assertEqual(row["persistent_conflict_status"], "NOT_COMPUTED")
+        self.assertEqual(row["persistent_conflict_incomplete_steps"], "")
+        self.assertEqual(row["current_persistent_conflict_streak"], "")
+        self.assertEqual(row["current_persistent_conflict_key_type"], "")
+        self.assertEqual(row["no_progress_status"], "NOT_COMPUTED")
+        self.assertEqual(row["no_progress_incomplete_steps"], "")
+        self.assertEqual(row["current_no_progress_streaks"], "")
+
+    def test_sidecar_created_only_when_both_log_and_monitor_active(self):
+        """Approval condition 1: no new CLI flag -- the sidecar appears
+        only when --log AND --monitor are both given; --log-only or
+        --monitor-only must never produce a <run_id>_monitor.csv."""
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled/scenario_cycle_ring_n4.json")
+        actions = {0: [RIGHT, RIGHT], 1: [DOWN, DOWN], 2: [LEFT, LEFT], 3: [UP, UP]}
+
+        # --log only (no monitor): main()'s own code path is exercised
+        # indirectly here by replicating exactly what it does -- write
+        # steps/summary, never write_monitor().
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                max_steps=2, logger=logger, monitor=None)
+            logger.write_steps()
+            logger.write_summary(num_agents=4, steps=2, success=True, timed_out=False, makespan=2)
+            self.assertFalse((Path(tmp) / "x_monitor.csv").exists())
+
+        # --monitor only (no logger): write_monitor() has nothing to be
+        # called on since there is no logger at all -- no file of any
+        # kind is produced.
+        monitor = DeadlockMonitor()
+        run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                            max_steps=2, logger=None, monitor=monitor)
+        # (nothing to assert on disk -- there is no logger/out_dir in
+        # this branch at all, which is itself the point.)
+
+        # both --log and --monitor: sidecar IS created.
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                max_steps=2, logger=logger, monitor=monitor)
+            logger.write_steps()
+            logger.write_summary(num_agents=4, steps=2, success=True, timed_out=False, makespan=2)
+            logger.write_monitor(monitor.result)
+            self.assertTrue((Path(tmp) / "x_monitor.csv").exists())
+
+    def test_steps_and_summary_csv_unaffected_by_writing_the_sidecar(self):
+        """Approval condition 2: writing the sidecar must not change a
+        single byte of *_steps.csv/*_summary.csv, and must not touch
+        their schema -- compares the same run against itself with and
+        without the extra write_monitor() call."""
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        actions = {0: [RIGHT] * 8, 1: [LEFT] * 8}
+
+        with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+            logger1 = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp1)
+            monitor1 = DeadlockMonitor()
+            run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                max_steps=8, logger=logger1, monitor=monitor1)
+            steps1 = logger1.write_steps()
+            summary1 = logger1.write_summary(num_agents=2, steps=8, success=False, timed_out=False, makespan=8)
+            # deliberately do NOT call write_monitor() here
+
+            logger2 = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp2)
+            monitor2 = DeadlockMonitor()
+            run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                max_steps=8, logger=logger2, monitor=monitor2)
+            steps2 = logger2.write_steps()
+            summary2 = logger2.write_summary(num_agents=2, steps=8, success=False, timed_out=False, makespan=8)
+            logger2.write_monitor(monitor2.result)  # extra call, this run only
+
+            self.assertEqual(steps1.read_text(encoding="utf-8"), steps2.read_text(encoding="utf-8"))
+            self.assertEqual(summary1.read_text(encoding="utf-8"), summary2.read_text(encoding="utf-8"))
+
+    def test_existing_output_paths_detects_collision_before_any_write(self):
+        """Approval condition 2 (pre-check): existing_output_paths() must
+        report a colliding path WITHOUT having written anything -- the
+        pre-existing sentinel content must still be exactly what it was."""
+        import tempfile
+
+        from src.common.episode_logger import EpisodeLogger
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("dup", scenario="s", mode="IL", out_dir=tmp)
+            sentinel = "SENTINEL\n"
+            (Path(tmp) / "dup_steps.csv").write_text(sentinel, encoding="utf-8")
+
+            self.assertEqual(logger.existing_output_paths(monitor=False),
+                              [Path(tmp) / "dup_steps.csv"])
+            self.assertEqual(logger.existing_output_paths(monitor=True),
+                              [Path(tmp) / "dup_steps.csv"])  # summary/monitor don't exist yet
+            # Confirm detection alone touched nothing.
+            self.assertEqual((Path(tmp) / "dup_steps.csv").read_text(encoding="utf-8"), sentinel)
+
+            (Path(tmp) / "dup_monitor.csv").write_text("ALSO SENTINEL\n", encoding="utf-8")
+            found = logger.existing_output_paths(monitor=True)
+            self.assertEqual(len(found), 2)
+
+    def test_main_refuses_to_overwrite_on_run_id_collision(self):
+        """Approval condition 2 (end-to-end, real scripts/run_il.py::main()):
+        forces a run_id collision (monkeypatching make_run_id to a fixed,
+        clearly-sentinel value so this is deterministic regardless of
+        wall-clock timing) and confirms main() raises BEFORE
+        run_episode() ever runs -- the pre-existing file is untouched,
+        and no sibling file for this run_id is created either."""
+        from unittest import mock
+
+        import scripts.run_il as run_il
+        from src.common.episode_logger import DEFAULT_OUT_DIR
+
+        fixed_run_id = "TEST_3B4_COLLISION_SENTINEL_RUN_ID"
+        scenario_path = PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3.json"
+        target = DEFAULT_OUT_DIR / f"{fixed_run_id}_steps.csv"
+        summary_sibling = DEFAULT_OUT_DIR / f"{fixed_run_id}_summary.csv"
+        monitor_sibling = DEFAULT_OUT_DIR / f"{fixed_run_id}_monitor.csv"
+        DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        sentinel = "SENTINEL-DO-NOT-OVERWRITE\n"
+        target.write_text(sentinel, encoding="utf-8")
+        summary_sibling.unlink(missing_ok=True)
+        monitor_sibling.unlink(missing_ok=True)
+        try:
+            with mock.patch("src.common.episode_logger.make_run_id", return_value=fixed_run_id):
+                with self.assertRaises(FileExistsError):
+                    run_il.main(["--scenario", str(scenario_path), "--log", "--monitor"])
+            self.assertEqual(target.read_text(encoding="utf-8"), sentinel)
+            self.assertFalse(summary_sibling.exists())
+            self.assertFalse(monitor_sibling.exists())
+        finally:
+            target.unlink(missing_ok=True)
+            summary_sibling.unlink(missing_ok=True)
+            monitor_sibling.unlink(missing_ok=True)
+
+    def test_monitor_on_off_trajectory_unaffected_by_sidecar_wiring(self):
+        """Approval: the sidecar is written entirely outside run_episode()
+        (in main(), after the loop finishes), so it cannot possibly
+        perturb the rollout -- re-confirmed directly here."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        result_no_monitor = run_il.run_episode(
+            _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8}), grid, starts, goals,
+            max_steps=8, logger=None, monitor=None)
+        result_with_monitor = run_il.run_episode(
+            _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8}), grid, starts, goals,
+            max_steps=8, logger=None, monitor=DeadlockMonitor())
+
+        self.assertEqual(result_no_monitor["trajectory"], result_with_monitor["trajectory"])
+        self.assertEqual(result_no_monitor["actions"], result_with_monitor["actions"])
+        self.assertEqual(result_no_monitor["steps"], result_with_monitor["steps"])
+        self.assertEqual(result_no_monitor["all_at_goal"], result_with_monitor["all_at_goal"])
+
+
 if __name__ == "__main__":
     unittest.main()

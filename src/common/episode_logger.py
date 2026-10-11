@@ -80,6 +80,54 @@ SUMMARY_FIELDS: Sequence[str] = (
     "vertex_conflicts", "edge_conflicts",
 )
 
+# Phase 3B-4: a THIRD, separate sidecar CSV -- one row per episode,
+# written by write_monitor() (below), never read or written by
+# write_steps()/write_summary(). Holds src.common.deadlock_monitor
+# .DeadlockMonitorResult's fields, accepted duck-typed (this module
+# imports nothing from deadlock_monitor.py, so no new cross-module
+# dependency is introduced either direction).
+#
+# This is a Trigger-level + observational-candidate-signal record, NOT a
+# final Operational Label (docs/deadlock_definition_v1.md Section 2
+# concepts 4-5): trigger_type only ever says a Full joint-state repeat
+# did or did not occur, never "this episode is a confirmed deadlock".
+#
+# Column order may grow by APPENDING new fields in a future phase (e.g.
+# CBS-backed joint_plan_exists/candidate_state_recoverable/
+# CBS_recovery_result, docs/deadlock_definition_v1.md Section 5.2/7.2) --
+# no unimplemented placeholder columns are added here now.
+MONITOR_FIELDS: Sequence[str] = (
+    "run_id", "scenario", "mode",
+    # Phase 3A -- Full joint-state repeat Trigger (never a final Label).
+    "trigger_type", "trigger_reason_code", "trigger_timestep", "first_seen", "period",
+    "blocking_type", "blocking_agents",
+    # Phase 3A -- position-overlap integrity ONLY. NOT a full integrity
+    # verdict: invalid_distance_rows (the offline analyzer's other
+    # integrity signal) is not computed by this Monitor at all.
+    "overlap_integrity_status", "overlap_timesteps",
+    # Phase 3B-1 -- persistent_conflict: the Monitor's CURRENT, online
+    # value as of the FINAL step of this episode -- NOT
+    # scripts/analyze_failure_logs.py's offline, whole-episode
+    # repeated_conflict_candidate_max/_max_consecutive (a different
+    # quantity, computed at a different time; never substitute one for
+    # the other). persistent_conflict_status=="NOT_COMPUTED" means the
+    # Monitor was never given current_positions/intended_positions this
+    # run; every field below it is then written "" (empty), NEVER "0" --
+    # a blank means "not computed", not "computed and found none".
+    "persistent_conflict_status", "persistent_conflict_incomplete_steps",
+    "current_persistent_conflict_streak",
+    "current_persistent_conflict_key_type",      # "vertex" | "edge" | ""
+    "current_persistent_conflict_key_location",  # "row,col" or "row1,col1|row2,col2"
+    "current_persistent_conflict_key_agents",     # ";"-joined, sorted agent ids
+    # Phase 3B-2A -- no_progress: likewise the CURRENT, online,
+    # final-step value -- NOT analyze_failure_logs.py's offline
+    # no_progress_steps (a total count) or max_no_progress_span (the
+    # episode's single largest streak). Same "" (not "0") rule applies
+    # when no_progress_status=="NOT_COMPUTED".
+    "no_progress_status", "no_progress_incomplete_steps",
+    "current_no_progress_streaks",                # "agent_id=streak;agent_id=streak;..."
+)
+
 
 def _scenario_slug(scenario_name: str) -> str:
     """'scenario_empty_s11_n3.json' -> 'empty_s11_n3' (strip dir/ext/prefix)."""
@@ -93,6 +141,39 @@ def make_run_id(scenario_name: str, mode: str, timestamp: Optional[datetime] = N
     """'<YYYYmmdd_HHMMSS>_<scenario_slug>_<mode>', e.g. 20260922_142500_empty_s11_n3_IL."""
     ts = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
     return f"{ts}_{_scenario_slug(scenario_name)}_{mode}"
+
+
+def _agent_list(agents) -> str:
+    """Sorted agent ids, ';'-joined -- a stable, order-independent serialization
+    (used for MONITOR_FIELDS' blocking_agents/*_key_agents columns)."""
+    return ";".join(str(a) for a in sorted(agents))
+
+
+def _persistent_conflict_key_parts(key) -> tuple[str, str, str]:
+    """DeadlockMonitorResult.current_persistent_conflict_key ->
+    (key_type, key_location, key_agents) for MONITOR_FIELDS' three
+    dedicated columns (Section 3.4):
+      None                                                      -> ("", "", "")
+      ("vertex", cell, frozenset(agents))                       -> ("vertex", "row,col", "a;b")
+      ("edge", frozenset({cell_a, cell_b}), frozenset(agents))  -> ("edge", "r1,c1|r2,c2", "a;b")
+    Cells inside an edge key are sorted so the two-cell location string is
+    deterministic regardless of frozenset iteration order.
+    """
+    if key is None:
+        return "", "", ""
+    kind, location, agents = key
+    if kind == "vertex":
+        location_str = f"{location[0]},{location[1]}"
+    else:  # "edge": `location` is a frozenset of the two cells
+        location_str = "|".join(f"{cell[0]},{cell[1]}" for cell in sorted(location))
+    return kind, location_str, _agent_list(agents)
+
+
+def _no_progress_streaks_str(streaks) -> str:
+    """DeadlockMonitorResult.current_no_progress_streaks (a tuple of
+    (agent_id, streak) pairs, already sorted by agent_id) ->
+    'agent_id=streak;agent_id=streak;...', "" if empty."""
+    return ";".join(f"{aid}={streak}" for aid, streak in streaks)
 
 
 class EpisodeLogger:
@@ -234,6 +315,79 @@ class EpisodeLogger:
         path = self.out_dir / f"{self.run_id}_summary.csv"
         with path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=SUMMARY_FIELDS)
+            writer.writeheader()
+            writer.writerow(row)
+        return path
+
+    def existing_output_paths(self, *, monitor: bool = False) -> list[Path]:
+        """Which of this run's target CSV paths already exist on disk --
+        <run_id>_steps.csv/_summary.csv always, plus <run_id>_monitor.csv
+        too when ``monitor=True``. A caller should check this BEFORE
+        calling write_steps()/write_summary()/write_monitor() for this
+        run_id, so a collision is caught before any of the files for
+        this run -- not just the last one checked -- gets silently
+        overwritten (all three share the same run_id, so a collision on
+        one likely means a collision on all of them)."""
+        paths = [
+            self.out_dir / f"{self.run_id}_steps.csv",
+            self.out_dir / f"{self.run_id}_summary.csv",
+        ]
+        if monitor:
+            paths.append(self.out_dir / f"{self.run_id}_monitor.csv")
+        return [p for p in paths if p.exists()]
+
+    def write_monitor(self, result) -> Path:
+        """Write the <run_id>_monitor.csv sidecar -- exactly one row, the
+        Monitor's FINAL per-episode snapshot. ``result`` is a
+        src.common.deadlock_monitor.DeadlockMonitorResult, accepted
+        duck-typed (only named attributes are read; this module imports
+        nothing from deadlock_monitor.py).
+
+        Never touches *_steps.csv/*_summary.csv, their schema, or
+        anything already written by write_steps()/write_summary() --
+        this is a wholly separate file. See MONITOR_FIELDS' module-level
+        comment for the full field semantics (Trigger vs. Label,
+        overlap-only integrity, online-current vs. offline-aggregate,
+        and the "" vs. "0" NOT_COMPUTED rule enforced below).
+        """
+        pc_ok = result.persistent_conflict_status == "OK"
+        np_ok = result.no_progress_status == "OK"
+        key_type, key_location, key_agents = (
+            _persistent_conflict_key_parts(result.current_persistent_conflict_key) if pc_ok else ("", "", "")
+        )
+        row = {
+            "run_id": self.run_id,
+            "scenario": self.scenario,
+            "mode": self.mode,
+            "trigger_type": result.trigger_type,
+            "trigger_reason_code": result.trigger_reason_code,
+            "trigger_timestep": result.trigger_timestep if result.trigger_timestep is not None else "",
+            "first_seen": result.first_seen if result.first_seen is not None else "",
+            "period": result.period if result.period is not None else "",
+            "blocking_type": result.blocking_type,
+            "blocking_agents": _agent_list(result.blocking_agents) if result.blocking_agents else "",
+            "overlap_integrity_status": result.overlap_integrity_status,
+            "overlap_timesteps": result.overlap_timesteps,
+            "persistent_conflict_status": result.persistent_conflict_status,
+            "persistent_conflict_incomplete_steps": (
+                result.persistent_conflict_incomplete_steps if pc_ok else ""
+            ),
+            "current_persistent_conflict_streak": (
+                result.current_persistent_conflict_streak if pc_ok else ""
+            ),
+            "current_persistent_conflict_key_type": key_type,
+            "current_persistent_conflict_key_location": key_location,
+            "current_persistent_conflict_key_agents": key_agents,
+            "no_progress_status": result.no_progress_status,
+            "no_progress_incomplete_steps": result.no_progress_incomplete_steps if np_ok else "",
+            "current_no_progress_streaks": (
+                _no_progress_streaks_str(result.current_no_progress_streaks) if np_ok else ""
+            ),
+        }
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        path = self.out_dir / f"{self.run_id}_monitor.csv"
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=MONITOR_FIELDS)
             writer.writeheader()
             writer.writerow(row)
         return path

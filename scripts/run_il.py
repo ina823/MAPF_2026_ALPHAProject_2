@@ -249,6 +249,20 @@ def main(argv=None):
         from src.common.deadlock_monitor import DeadlockMonitor
         monitor = DeadlockMonitor()
 
+    # Phase 3B-4: fail BEFORE running the episode (not just before the
+    # write that would collide) if this run_id's target CSV path(s)
+    # already exist -- steps/summary/monitor all share one run_id, so a
+    # collision on one almost certainly means a collision on all of
+    # them; checking now means we never overwrite one file only to
+    # discover a collision on the next.
+    if logger is not None:
+        existing = logger.existing_output_paths(monitor=monitor is not None)
+        if existing:
+            raise FileExistsError(
+                f"refusing to overwrite existing log file(s) for run_id={logger.run_id!r}: "
+                + ", ".join(str(p) for p in existing)
+            )
+
     result = run_episode(policy, grid, starts, goals, args.max_steps, logger=logger, monitor=monitor)
 
     print(f"checkpoint : {args.ckpt.name}  (hint_mode={policy.hint_mode}, goal_dim={policy.model['goal_dim']})")
@@ -275,6 +289,12 @@ def main(argv=None):
         )
         print(f"log steps  : {steps_path}")
         print(f"log summary: {summary_path}")
+        if monitor is not None:
+            # Phase 3B-4: sidecar CSV, only when BOTH --log and --monitor
+            # are active (no new CLI flag). Never written otherwise, so
+            # --log-only or --monitor-only runs never produce this file.
+            monitor_path = logger.write_monitor(monitor.result)
+            print(f"log monitor: {monitor_path}")
 
     if monitor is not None:
         r = monitor.result
