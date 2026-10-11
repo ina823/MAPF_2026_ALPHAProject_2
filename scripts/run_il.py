@@ -34,7 +34,7 @@ DEFAULT_SCENARIO = PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3
 DEFAULT_MAX_STEPS = 160  # same default as Alpha 1 scripts/eval_flow.py
 
 
-def _log_step(logger, sim, policy, before_positions, actions, info, done):
+def _log_step(logger, sim, policy, before_positions, actions, info, done, trigger_reason=""):
     """Bridge one simulator step into EpisodeLogger rows (IL-specific glue).
 
     Lives here, not in the simulator/policy/logger, so that MAPFStepSimulator
@@ -44,6 +44,19 @@ def _log_step(logger, sim, policy, before_positions, actions, info, done):
     already computed elsewhere (spec.ACTION_DELTA, sim._positions,
     sim._last_conflict_types, policy._dist / nav_hint.bfs_dist) -- it invents
     no new distance/collision logic of its own.
+
+    ``trigger_reason`` (Phase 3B-3, optional, default ""): the Monitor's
+    ``DeadlockMonitorResult.trigger_reason_code`` for THIS timestep (e.g.
+    "TRIGGER_NONE" / "TRIGGER_FULL_REPEAT"), already computed by the caller
+    before this function runs. Written identically into every agent's row
+    for this timestep -- same pattern as ``done``/``success``, which are
+    also episode/monitor-level values repeated across all agent rows, not
+    per-agent ones. This is the existing ``EpisodeLogger.log_step``
+    ``trigger_reason`` parameter (present since Common Logging, never
+    populated until now) -- no new field, no schema change. It is a
+    Trigger signal only (docs/deadlock_definition_v1.md Section 2 concept
+    4), never a final Operational Label (concept 5); this function does
+    not compute, and must never be read as, a deadlock verdict.
     """
     success = bool(info["all_at_goal"])
     failure_reason = "timeout" if (done and info["timed_out"] and not success) else ""
@@ -70,6 +83,7 @@ def _log_step(logger, sim, policy, before_positions, actions, info, done):
             done=done,
             success=success,
             failure_reason=failure_reason,
+            trigger_reason=trigger_reason,
         )
     logger.log_timestep_conflicts(
         vertex_events=sim._last_vertex_conflict_count,
@@ -97,9 +111,12 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
     function is unaffected; when provided, it only observes positions/
     conflict_type/goal-distance and never changes actions or stops the
     rollout. Phase 3B-2B wires goal_distance_before/after through to it
-    (the same values ``_log_step`` already computes for the logger); it
-    does NOT wire Phase 3B-1's current_positions/intended_positions --
-    that remains a separate, not-yet-connected step."""
+    (the same values ``_log_step`` already computes for the logger);
+    Phase 3B-3 additionally feeds its per-step ``trigger_reason_code``
+    into the logger's existing ``trigger_reason`` CSV column (see
+    ``_log_step``). Phase 3B-1's current_positions/intended_positions
+    (persistent_conflict's real inputs) are still NOT wired -- that
+    remains a separate, not-yet-connected step."""
     sim = MAPFStepSimulator(cbs_solver_root=None, max_steps=max_steps)
     obs = sim.reset(grid, starts, goals)
     policy.reset(grid, goals)
@@ -121,8 +138,14 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
         obs, done, info = sim.step(actions)
         actions_log.append(dict(actions))
         trajectory.append({aid: tuple(pos) for aid, pos in sim._positions.items()})
-        if logger is not None:
-            _log_step(logger, sim, policy, before_positions, actions, info, done)
+
+        # Phase 3B-3: the monitor is now observed BEFORE _log_step() is
+        # called, so its trigger_reason_code for THIS timestep is ready in
+        # time to be written into the CSV row below. This reordering does
+        # not touch policy.act()/sim.step() (already both run above,
+        # unchanged) and observe_step() is read-only, so it cannot alter
+        # the trajectory/actions/goal_distance values _log_step() uses.
+        trigger_reason = ""
         if monitor is not None:
             # Same raw computation _log_step uses for the logger
             # (policy._dist[aid] looked up at the pre-/post-step
@@ -136,11 +159,16 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
                 aid: int(policy._dist[aid][sim._positions[aid][0], sim._positions[aid][1]])
                 for aid in sim._agent_ids
             }
-            monitor.observe_step(
+            r = monitor.observe_step(
                 info["t"], sim._positions, sim._last_conflict_types,
                 goal_distance_before=goal_distance_before,
                 goal_distance_after=goal_distance_after,
             )
+            trigger_reason = r.trigger_reason_code
+
+        if logger is not None:
+            _log_step(logger, sim, policy, before_positions, actions, info, done,
+                      trigger_reason=trigger_reason)
         if done:
             break
 

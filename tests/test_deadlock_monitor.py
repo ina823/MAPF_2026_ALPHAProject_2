@@ -1077,11 +1077,21 @@ class TestRunIlNoProgressWiring(unittest.TestCase):
         self.assertEqual(result_no_monitor["timed_out"], result_with_monitor["timed_out"])
         self.assertEqual(result_no_monitor["final_positions"], result_with_monitor["final_positions"])
 
-    def test_logger_and_monitor_together_csv_is_byte_identical_to_logger_alone(self):
-        """Approval condition 4/9: attaching a monitor alongside a logger
-        must not change a single byte of the written steps CSV -- the
-        new goal_distance computation added for the monitor's benefit
-        must never alter what `_log_step`/`EpisodeLogger` write."""
+    def test_csv_differs_only_in_trigger_reason_when_monitor_is_attached(self):
+        """Phase 3B-3 REPLACES the old 3B-2B invariant here (which asserted
+        byte-identical CSVs regardless of monitor). That assertion is now
+        deliberately false: Phase 3B-3's entire purpose is to make
+        attaching a monitor alongside a logger populate the existing
+        `trigger_reason` column, which previously stayed "" always
+        (approval condition 6: replace, with the reason recorded here).
+        The corrected, precise invariant: EVERY column except
+        `trigger_reason` is identical with/without a monitor, the
+        `monitor=None` path's `trigger_reason` is unconditionally "" (no
+        regression there), and the `monitor` path's `trigger_reason`
+        reflects the real Trigger state (checked in detail by the
+        dedicated sticky-timeline test below)."""
+        import csv
+        import io
         import tempfile
 
         import scripts.run_il as run_il
@@ -1104,8 +1114,69 @@ class TestRunIlNoProgressWiring(unittest.TestCase):
                 max_steps=4, logger=logger_with_monitor, monitor=DeadlockMonitor())
             path_with_monitor = logger_with_monitor.write_steps()
 
-            self.assertEqual(path_alone.read_text(encoding="utf-8"),
-                              path_with_monitor.read_text(encoding="utf-8"))
+            rows_alone = list(csv.DictReader(io.StringIO(path_alone.read_text(encoding="utf-8"))))
+            rows_with_monitor = list(csv.DictReader(io.StringIO(path_with_monitor.read_text(encoding="utf-8"))))
+
+        self.assertEqual(len(rows_alone), len(rows_with_monitor))
+        self.assertEqual(list(rows_alone[0].keys()), list(rows_with_monitor[0].keys()))  # schema/order unchanged
+        for r1, r2 in zip(rows_alone, rows_with_monitor):
+            self.assertEqual(r1["trigger_reason"], "")  # monitor=None path: unchanged regression check
+            for key in r1:
+                if key == "trigger_reason":
+                    continue
+                self.assertEqual(r1[key], r2[key], f"column {key!r} differs: {r1[key]!r} vs {r2[key]!r}")
+        # The monitor path must have ACTUALLY populated the column with
+        # something other than the blank default, or this test would pass
+        # vacuously without proving anything.
+        self.assertTrue(any(r["trigger_reason"] for r in rows_with_monitor))
+
+    def test_trigger_reason_csv_timeline_is_sticky_and_consistent_across_agents(self):
+        """Approval condition 5 (dedicated test, real IL run + real CSV
+        read-back, not DeadlockMonitor's API in isolation): before the
+        confirmed Full-repeat (first_seen=1, trigger_timestep=2 for this
+        scenario, matching every prior phase's evidence for it), every row
+        reads "TRIGGER_NONE"; from trigger_timestep onward, every row
+        reads "TRIGGER_FULL_REPEAT" (sticky -- Phase 3A's trigger_type
+        never reverts once settled). Both of this scenario's two agents'
+        rows at a given timestep must carry the IDENTICAL value (it is an
+        episode/monitor-level signal, not a per-agent one -- same pattern
+        as the existing `done`/`success` columns)."""
+        import csv
+        import io
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled/scenario_intersection_n2.json")
+        actions = {0: [RIGHT] * 6, 1: [DOWN] * 6}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(
+                _FixedActionPolicy(actions), grid, starts, goals,
+                max_steps=6, logger=logger, monitor=monitor)
+            path = logger.write_steps()
+            csv_text = path.read_text(encoding="utf-8")
+
+        rows = list(csv.DictReader(io.StringIO(csv_text)))
+        by_timestep = {}
+        for row in rows:
+            by_timestep.setdefault(int(row["timestep"]), []).append(row["trigger_reason"])
+
+        for t in range(1, 7):
+            values_at_t = set(by_timestep[t])
+            self.assertEqual(len(values_at_t), 1,
+                              f"t={t}: agent rows disagree on trigger_reason: {by_timestep[t]}")
+            expected = "TRIGGER_NONE" if t < 2 else "TRIGGER_FULL_REPEAT"
+            self.assertEqual(values_at_t.pop(), expected, f"t={t}")
+
+        # Cross-check against the monitor's own final state for this run.
+        r = monitor.result
+        self.assertEqual(r.trigger_reason_code, "TRIGGER_FULL_REPEAT")
+        self.assertEqual(r.trigger_timestep, 2)
 
     def test_ki1_bottleneck_convoy_no_progress_not_suppressed_by_overlap(self):
         """Approval point 8 (KI-1), through the real run_episode() path."""
@@ -1196,6 +1267,175 @@ class TestRunIlNoProgressWiring(unittest.TestCase):
         self.assertEqual(r.current_no_progress_streaks, ((0, 156), (1, 156)))  # 160 - 4
         self.assertEqual(r.no_progress_incomplete_steps, 0)
         self.assertEqual(r.persistent_conflict_status, "NOT_COMPUTED")  # condition 6: not wired this round
+
+
+class TestTriggerReasonCsvRealScenarios(unittest.TestCase):
+    """Phase 3B-3, approval condition 7: the real CSV `trigger_reason`
+    timeline, read back from disk, for the original Corridor/Intersection/
+    Bottleneck stalls, a successful Cycle/Smoke run (with the REAL
+    NavHintPolicy checkpoint), and KI-1. These read the written CSV
+    directly (not just DeadlockMonitorResult) so the actual Logger output
+    is what gets checked, matching this phase's stated goal."""
+
+    @staticmethod
+    def _csv_rows(path):
+        import csv
+        import io
+        return list(csv.DictReader(io.StringIO(path.read_text(encoding="utf-8"))))
+
+    def _trigger_reason_by_timestep(self, rows):
+        by_t = {}
+        for row in rows:
+            by_t.setdefault(int(row["timestep"]), set()).add(row["trigger_reason"])
+        return by_t
+
+    def test_corridor_bay_n2_real_checkpoint_trigger_reason_timeline(self):
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_corridor_bay_n2.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=20,
+                                logger=logger, monitor=monitor)
+            rows = self._csv_rows(logger.write_steps())
+
+        by_t = self._trigger_reason_by_timestep(rows)
+        for t in range(1, 21):
+            values = by_t[t]
+            self.assertEqual(len(values), 1, f"t={t}: {values}")
+            expected = "TRIGGER_NONE" if t < 5 else "TRIGGER_FULL_REPEAT"  # doc Section 4.3 worked example
+            self.assertEqual(values.pop(), expected, f"t={t}")
+
+    def test_intersection_n2_real_checkpoint_trigger_reason_timeline(self):
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_intersection_n2.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=10,
+                                logger=logger, monitor=monitor)
+            rows = self._csv_rows(logger.write_steps())
+
+        by_t = self._trigger_reason_by_timestep(rows)
+        for t in range(1, 11):
+            values = by_t[t]
+            self.assertEqual(len(values), 1, f"t={t}: {values}")
+            expected = "TRIGGER_NONE" if t < 2 else "TRIGGER_FULL_REPEAT"
+            self.assertEqual(values.pop(), expected, f"t={t}")
+
+    def test_bottleneck_n4_real_checkpoint_trigger_reason_timeline(self):
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_bottleneck_n4.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=10,
+                                logger=logger, monitor=monitor)
+            rows = self._csv_rows(logger.write_steps())
+
+        by_t = self._trigger_reason_by_timestep(rows)
+        for t in range(1, 11):
+            values = by_t[t]
+            self.assertEqual(len(values), 1, f"t={t}: {values}")
+            expected = "TRIGGER_NONE" if t < 2 else "TRIGGER_FULL_REPEAT"
+            self.assertEqual(values.pop(), expected, f"t={t}")
+
+    def test_success_smoke_scenario_real_checkpoint_trigger_reason_always_none(self):
+        """Approval condition 7 (성공 Smoke), real checkpoint: a clean
+        success run must show "TRIGGER_NONE" for every row, every
+        timestep -- never a false trigger."""
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            result = run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=160,
+                                         logger=logger, monitor=monitor)
+            rows = self._csv_rows(logger.write_steps())
+
+        self.assertTrue(result["all_at_goal"])
+        self.assertEqual(result["steps"], 9)
+        self.assertTrue(all(row["trigger_reason"] == "TRIGGER_NONE" for row in rows))
+
+    def test_success_cycle_ring_n4_trigger_reason_always_none(self):
+        """Approval condition 7 (성공 Cycle)."""
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled/scenario_cycle_ring_n4.json")
+        actions = {0: [RIGHT, RIGHT], 1: [DOWN, DOWN], 2: [LEFT, LEFT], 3: [UP, UP]}
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            result = run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                         max_steps=2, logger=logger, monitor=monitor)
+            rows = self._csv_rows(logger.write_steps())
+
+        self.assertTrue(result["all_at_goal"])
+        self.assertTrue(all(row["trigger_reason"] == "TRIGGER_NONE" for row in rows))
+
+    def test_ki1_bottleneck_convoy_trigger_reason_not_suppressed_by_overlap(self):
+        """Approval condition 7 (KI-1): the documented single-pass
+        vertex-resolution overlap quirk must not prevent trigger_reason
+        from correctly reflecting the Full-repeat, kept in its own test
+        per this file's established KI-1-separation discipline."""
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
+        actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                max_steps=4, logger=logger, monitor=monitor)
+            rows = self._csv_rows(logger.write_steps())
+
+        self.assertEqual(monitor.result.overlap_integrity_status, "INTEGRITY_ISSUE")
+        by_t = self._trigger_reason_by_timestep(rows)
+        for t in range(1, 5):
+            values = by_t[t]
+            self.assertEqual(len(values), 1, f"t={t}: {values}")
+            expected = "TRIGGER_NONE" if t < 2 else "TRIGGER_FULL_REPEAT"
+            self.assertEqual(values.pop(), expected, f"t={t}")
 
 
 if __name__ == "__main__":
