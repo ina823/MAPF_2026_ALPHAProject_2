@@ -364,6 +364,12 @@ class TestBaselineUnaffectedByMonitor(unittest.TestCase):
 
         def reset(self, grid, goals):
             self._grid = grid
+            # Phase 3B-2B: run_il.py::run_episode now looks up
+            # policy._dist[aid] whenever monitor is not None (to feed the
+            # no_progress signal), the same way the real NavHintPolicy
+            # does in its own reset() -- this stub needs the same
+            # attribute to exercise that code path.
+            self._dist = {aid: bfs_dist(grid, goal) for aid, goal in goals.items()}
 
         def act(self, obs, positions):
             actions = {}
@@ -982,6 +988,214 @@ class TestNoProgressSynthetic(unittest.TestCase):
         self.assertEqual(r2.current_no_progress_streaks, ((0, 2),))
         # r1 must NOT have silently become equal to r2's later value.
         self.assertNotEqual(r1.current_no_progress_streaks, r2.current_no_progress_streaks)
+
+
+class _FixedActionPolicy:
+    """Deterministic, stateless, driven by a pre-set per-agent action list
+    (falls back to WAIT once exhausted). Unlike TestBaselineUnaffectedByMonitor's
+    `_StubPolicy` (which just hugs a wall), this reuses the exact fixed
+    action sequences already established and cross-checked elsewhere in
+    this file, so it can drive `scripts.run_il.run_episode()`'s REAL code
+    path (Phase 3B-2B's actual wiring, not DeadlockMonitor's API called
+    directly) while landing on already-known first_seen/trigger_timestep/
+    blocking_type values. Computes `self._dist` via the real `bfs_dist()`,
+    exactly like `NavHintPolicy.reset()` does, since
+    `scripts.run_il.run_episode()` now reads `policy._dist` whenever a
+    monitor is attached (Phase 3B-2B)."""
+
+    def __init__(self, actions_per_agent):
+        self._actions_per_agent = actions_per_agent
+        self._t = 0
+
+    def reset(self, grid, goals):
+        self._grid = grid
+        self._dist = {aid: bfs_dist(grid, goal) for aid, goal in goals.items()}
+        self._t = 0
+
+    def act(self, obs, positions):
+        actions = {
+            aid: (seq[self._t] if self._t < len(seq) else WAIT)
+            for aid, seq in self._actions_per_agent.items()
+        }
+        self._t += 1
+        return actions
+
+
+class TestRunIlNoProgressWiring(unittest.TestCase):
+    """Phase 3B-2B: validates the ACTUAL `scripts/run_il.py::run_episode()`
+    wiring -- not DeadlockMonitor's API in isolation. Confirms
+    goal_distance_before/after now really reach `observe_step()` through
+    the real function (not a hand-built call), that doing so changes
+    nothing about the simulated rollout, and that it stays fully
+    independent of persistent_conflict (which this phase deliberately does
+    NOT wire -- condition 6) and of Logger's existing CSV output."""
+
+    def test_corridor_bay_n2_no_progress_reaches_monitor_through_run_episode(self):
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        monitor = DeadlockMonitor()
+        policy = _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8})
+        run_il.run_episode(policy, grid, starts, goals, max_steps=8, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.current_no_progress_streaks, ((0, 4), (1, 4)))
+        self.assertEqual(r.no_progress_incomplete_steps, 0)
+        # Phase 3A/3B-1 are unaffected by this wiring (approval condition 5):
+        # trigger/blocking fields identical to every prior-phase check of
+        # this same scenario, and persistent_conflict stays NOT_COMPUTED
+        # because condition 6 explicitly excludes wiring it this round.
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.first_seen, 4)
+        self.assertEqual(r.trigger_timestep, 5)
+        self.assertEqual(r.blocking_type, "VERTEX")
+        self.assertEqual(r.persistent_conflict_status, "NOT_COMPUTED")
+
+    def test_monitor_on_off_trajectory_identical_on_a_stalling_scenario(self):
+        """Approval condition 9. Unlike TestBaselineUnaffectedByMonitor's
+        wall-hugging stub (which never stalls), this exercises the ON/OFF
+        comparison on a scenario that actually drives the new
+        goal_distance computation through a Full-repeat freeze, which is
+        exactly the path most likely to perturb something if the wiring
+        were wrong."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        result_no_monitor = run_il.run_episode(
+            _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8}), grid, starts, goals,
+            max_steps=8, logger=None, monitor=None)
+        result_with_monitor = run_il.run_episode(
+            _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8}), grid, starts, goals,
+            max_steps=8, logger=None, monitor=DeadlockMonitor())
+
+        self.assertEqual(result_no_monitor["steps"], result_with_monitor["steps"])
+        self.assertEqual(result_no_monitor["trajectory"], result_with_monitor["trajectory"])
+        self.assertEqual(result_no_monitor["actions"], result_with_monitor["actions"])
+        self.assertEqual(result_no_monitor["all_at_goal"], result_with_monitor["all_at_goal"])
+        self.assertEqual(result_no_monitor["timed_out"], result_with_monitor["timed_out"])
+        self.assertEqual(result_no_monitor["final_positions"], result_with_monitor["final_positions"])
+
+    def test_logger_and_monitor_together_csv_is_byte_identical_to_logger_alone(self):
+        """Approval condition 4/9: attaching a monitor alongside a logger
+        must not change a single byte of the written steps CSV -- the
+        new goal_distance computation added for the monitor's benefit
+        must never alter what `_log_step`/`EpisodeLogger` write."""
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
+        actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
+
+        with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+            logger_alone = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp1)
+            run_il.run_episode(
+                _FixedActionPolicy(actions), grid, starts, goals,
+                max_steps=4, logger=logger_alone, monitor=None)
+            path_alone = logger_alone.write_steps()
+
+            logger_with_monitor = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp2)
+            run_il.run_episode(
+                _FixedActionPolicy(actions), grid, starts, goals,
+                max_steps=4, logger=logger_with_monitor, monitor=DeadlockMonitor())
+            path_with_monitor = logger_with_monitor.write_steps()
+
+            self.assertEqual(path_alone.read_text(encoding="utf-8"),
+                              path_with_monitor.read_text(encoding="utf-8"))
+
+    def test_ki1_bottleneck_convoy_no_progress_not_suppressed_by_overlap(self):
+        """Approval point 8 (KI-1), through the real run_episode() path."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
+        actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
+        monitor = DeadlockMonitor()
+        run_il.run_episode(
+            _FixedActionPolicy(actions), grid, starts, goals,
+            max_steps=4, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.overlap_integrity_status, "INTEGRITY_ISSUE")
+        self.assertGreater(r.overlap_timesteps, 0)
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.no_progress_incomplete_steps, 0)
+        self.assertEqual(dict(r.current_no_progress_streaks), {0: 3, 1: 4, 2: 4, 3: 3})
+
+    def test_success_cycle_ring_n4_no_false_candidate_through_run_episode(self):
+        """Approval point 8 (성공 Cycle)."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_cycle_ring_n4.json")
+        actions = {0: [RIGHT, RIGHT], 1: [DOWN, DOWN], 2: [LEFT, LEFT], 3: [UP, UP]}
+        monitor = DeadlockMonitor()
+        result = run_il.run_episode(
+            _FixedActionPolicy(actions), grid, starts, goals,
+            max_steps=2, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertTrue(result["all_at_goal"])
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.current_no_progress_streaks, ())
+        self.assertEqual(r.trigger_type, "NONE")
+
+    def test_real_navhint_checkpoint_end_to_end_smoke_scenario(self):
+        """Approval point 8 (성공 Smoke) + point 9: the ACTUAL trained
+        checkpoint and NavHintPolicy, not a fixed-action stand-in, driven
+        through the real run_episode() path with a monitor attached. This
+        is the strictest form of "실제 실행 결과" -- genuine IL inference."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3.json")
+        policy = NavHintPolicy(ckpt)
+        monitor = DeadlockMonitor()
+        result = run_il.run_episode(policy, grid, starts, goals, max_steps=160, logger=None, monitor=monitor)
+        r = monitor.result
+        # Same reference behaviour scripts/smoke_test_il.py's strict
+        # baseline already certifies (steps=9, all_at_goal=True).
+        self.assertEqual(result["steps"], 9)
+        self.assertTrue(result["all_at_goal"])
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.current_no_progress_streaks, ())  # never stalls
+        self.assertEqual(r.trigger_type, "NONE")
+
+    def test_real_navhint_checkpoint_end_to_end_corridor_bay_n2(self):
+        """Approval point 8 (원본 Corridor) + point 9, with the real
+        checkpoint: confirms the real IL policy's own decisions (not a
+        fixed action list) reproduce the documented first_seen=4/
+        trigger_timestep=5/VERTEX stall (docs/deadlock_definition_v1.md
+        Section 4.3's worked example), and that no_progress grows to
+        exactly steps-first_seen by the time the episode times out."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_corridor_bay_n2.json")
+        policy = NavHintPolicy(ckpt)
+        monitor = DeadlockMonitor()
+        result = run_il.run_episode(policy, grid, starts, goals, max_steps=160, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(result["steps"], 160)
+        self.assertFalse(result["all_at_goal"])
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.first_seen, 4)
+        self.assertEqual(r.trigger_timestep, 5)
+        self.assertEqual(r.blocking_type, "VERTEX")
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.current_no_progress_streaks, ((0, 156), (1, 156)))  # 160 - 4
+        self.assertEqual(r.no_progress_incomplete_steps, 0)
+        self.assertEqual(r.persistent_conflict_status, "NOT_COMPUTED")  # condition 6: not wired this round
 
 
 if __name__ == "__main__":

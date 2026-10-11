@@ -91,11 +91,15 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
     /write_summary() are the caller's responsibility (see main() below).
 
     ``monitor``: optional src.common.deadlock_monitor.DeadlockMonitor
-    (Phase 3A, full joint-state repeat only -- see
-    docs/deadlock_definition_v1.md). Same additive-only contract as
-    ``logger``: when None (the default) this function is unaffected; when
-    provided, it only observes positions/conflict_type and never changes
-    actions or stops the rollout."""
+    (Phase 3A full joint-state repeat + Phase 3B-1 persistent_conflict +
+    Phase 3B-2A no_progress -- see docs/deadlock_definition_v1.md). Same
+    additive-only contract as ``logger``: when None (the default) this
+    function is unaffected; when provided, it only observes positions/
+    conflict_type/goal-distance and never changes actions or stops the
+    rollout. Phase 3B-2B wires goal_distance_before/after through to it
+    (the same values ``_log_step`` already computes for the logger); it
+    does NOT wire Phase 3B-1's current_positions/intended_positions --
+    that remains a separate, not-yet-connected step."""
     sim = MAPFStepSimulator(cbs_solver_root=None, max_steps=max_steps)
     obs = sim.reset(grid, starts, goals)
     policy.reset(grid, goals)
@@ -108,14 +112,35 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
     done = False
     for _ in range(max_steps):
         actions = policy.act(obs, sim._positions)
-        before_positions = {aid: sim._positions[aid] for aid in sim._agent_ids} if logger is not None else None
+        # Phase 3B-2B: monitor's no_progress signal needs the same
+        # pre-step snapshot logger's _log_step already needed -- extend
+        # the guard, not the computation itself, so a bare baseline run
+        # (logger=None, monitor=None) still skips this entirely.
+        need_before_positions = logger is not None or monitor is not None
+        before_positions = {aid: sim._positions[aid] for aid in sim._agent_ids} if need_before_positions else None
         obs, done, info = sim.step(actions)
         actions_log.append(dict(actions))
         trajectory.append({aid: tuple(pos) for aid, pos in sim._positions.items()})
         if logger is not None:
             _log_step(logger, sim, policy, before_positions, actions, info, done)
         if monitor is not None:
-            monitor.observe_step(info["t"], sim._positions, sim._last_conflict_types)
+            # Same raw computation _log_step uses for the logger
+            # (policy._dist[aid] looked up at the pre-/post-step
+            # position) -- duplicated here, not shared, so _log_step and
+            # EpisodeLogger's existing behaviour stay untouched.
+            goal_distance_before = {
+                aid: int(policy._dist[aid][before_positions[aid][0], before_positions[aid][1]])
+                for aid in sim._agent_ids
+            }
+            goal_distance_after = {
+                aid: int(policy._dist[aid][sim._positions[aid][0], sim._positions[aid][1]])
+                for aid in sim._agent_ids
+            }
+            monitor.observe_step(
+                info["t"], sim._positions, sim._last_conflict_types,
+                goal_distance_before=goal_distance_before,
+                goal_distance_after=goal_distance_after,
+            )
         if done:
             break
 
