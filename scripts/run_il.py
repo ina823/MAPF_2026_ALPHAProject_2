@@ -114,9 +114,11 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
     (the same values ``_log_step`` already computes for the logger);
     Phase 3B-3 additionally feeds its per-step ``trigger_reason_code``
     into the logger's existing ``trigger_reason`` CSV column (see
-    ``_log_step``). Phase 3B-1's current_positions/intended_positions
-    (persistent_conflict's real inputs) are still NOT wired -- that
-    remains a separate, not-yet-connected step."""
+    ``_log_step``). Phase 3B (persistent_conflict wiring) now also
+    passes current_positions/intended_positions -- persistent_conflict
+    stays a separate, observational candidate signal (never a Trigger,
+    never a final Operational Label); it is not written to any CSV
+    column yet (left for a future sidecar output, Phase 3B-4)."""
     sim = MAPFStepSimulator(cbs_solver_root=None, max_steps=max_steps)
     obs = sim.reset(grid, starts, goals)
     policy.reset(grid, goals)
@@ -159,8 +161,24 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
                 aid: int(policy._dist[aid][sim._positions[aid][0], sim._positions[aid][1]])
                 for aid in sim._agent_ids
             }
+            # Phase 3B (persistent_conflict wiring): raw, pre-wall-clamp
+            # intended cell per agent -- the same formula _log_step uses
+            # for the CSV's `intended` column (current + the chosen
+            # action's spec.ACTION_DELTA). This is the agent's PROPOSED
+            # target before collision resolution, not sim._positions[aid]
+            # (the ACTUAL post-resolution position after bounce-back).
+            # DeadlockMonitor only ever reads this for agents classified
+            # vertex/edge (never wall-hit), for which this raw value is
+            # identical to the simulator's own internal pre-clamp snapshot
+            # (see docs/deadlock_definition_v1.md Section 3.3/3.4).
+            intended_positions = {}
+            for aid in sim._agent_ids:
+                drow, dcol = spec.ACTION_DELTA[actions[aid]]
+                intended_positions[aid] = (before_positions[aid][0] + drow, before_positions[aid][1] + dcol)
             r = monitor.observe_step(
                 info["t"], sim._positions, sim._last_conflict_types,
+                current_positions=before_positions,
+                intended_positions=intended_positions,
                 goal_distance_before=goal_distance_before,
                 goal_distance_after=goal_distance_after,
             )

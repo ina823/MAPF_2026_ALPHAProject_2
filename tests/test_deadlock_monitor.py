@@ -1042,15 +1042,24 @@ class TestRunIlNoProgressWiring(unittest.TestCase):
         self.assertEqual(r.no_progress_status, "OK")
         self.assertEqual(r.current_no_progress_streaks, ((0, 4), (1, 4)))
         self.assertEqual(r.no_progress_incomplete_steps, 0)
-        # Phase 3A/3B-1 are unaffected by this wiring (approval condition 5):
+        # Phase 3A is unaffected by this wiring (approval condition 5):
         # trigger/blocking fields identical to every prior-phase check of
-        # this same scenario, and persistent_conflict stays NOT_COMPUTED
-        # because condition 6 explicitly excludes wiring it this round.
+        # this same scenario. persistent_conflict is now ALSO wired
+        # (updated here from an earlier phase's "NOT_COMPUTED" assertion,
+        # now that scripts/run_il.py actually passes current_positions/
+        # intended_positions through) -- same key/streak pattern already
+        # established directly against DeadlockMonitor in
+        # TestPersistentConflictCandidateReal.
+        # test_corridor_bay_n2_persistent_conflict_streak_grows_while_blocked
+        # above (first_seen=4, trigger_timestep=5, streak=4 by t=8).
         self.assertEqual(r.trigger_type, "FULL")
         self.assertEqual(r.first_seen, 4)
         self.assertEqual(r.trigger_timestep, 5)
         self.assertEqual(r.blocking_type, "VERTEX")
-        self.assertEqual(r.persistent_conflict_status, "NOT_COMPUTED")
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 4)
+        self.assertEqual(r.current_persistent_conflict_key, ("vertex", (2, 5), frozenset({0, 1})))
+        self.assertEqual(r.persistent_conflict_incomplete_steps, 0)
 
     def test_monitor_on_off_trajectory_identical_on_a_stalling_scenario(self):
         """Approval condition 9. Unlike TestBaselineUnaffectedByMonitor's
@@ -1266,7 +1275,14 @@ class TestRunIlNoProgressWiring(unittest.TestCase):
         self.assertEqual(r.no_progress_status, "OK")
         self.assertEqual(r.current_no_progress_streaks, ((0, 156), (1, 156)))  # 160 - 4
         self.assertEqual(r.no_progress_incomplete_steps, 0)
-        self.assertEqual(r.persistent_conflict_status, "NOT_COMPUTED")  # condition 6: not wired this round
+        # persistent_conflict is now wired too (updated from an earlier
+        # phase's "NOT_COMPUTED" assertion): real NavHintPolicy checkpoint,
+        # same vertex key recurring every step from t=5 onward -> streak
+        # = 160 - 5 + 1 = 156 by the time the episode times out.
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 156)
+        self.assertEqual(r.current_persistent_conflict_key, ("vertex", (2, 5), frozenset({0, 1})))
+        self.assertEqual(r.persistent_conflict_incomplete_steps, 0)
 
 
 class TestTriggerReasonCsvRealScenarios(unittest.TestCase):
@@ -1436,6 +1452,235 @@ class TestTriggerReasonCsvRealScenarios(unittest.TestCase):
             self.assertEqual(len(values), 1, f"t={t}: {values}")
             expected = "TRIGGER_NONE" if t < 2 else "TRIGGER_FULL_REPEAT"
             self.assertEqual(values.pop(), expected, f"t={t}")
+
+
+class TestRunIlPersistentConflictWiring(unittest.TestCase):
+    """Phase 3B (persistent_conflict real IL wiring): validates the ACTUAL
+    scripts/run_il.py::run_episode() code path -- not DeadlockMonitor's
+    API called directly (that is TestPersistentConflictCandidateReal's
+    job). Confirms current_positions/intended_positions now really reach
+    observe_step() through run_episode(), that doing so changes nothing
+    about the simulated rollout or the written CSV, and that it stays
+    fully independent of trigger_type/blocking_type/no_progress/
+    trigger_reason (approval conditions 5/6)."""
+
+    def test_csv_differs_only_in_trigger_reason_persistent_conflict_adds_nothing(self):
+        """Approval condition 8: persistent_conflict is not written to any
+        CSV column (deferred to a future sidecar, Phase 3B-4), so wiring
+        its inputs must not add any NEW difference beyond the one Phase
+        3B-3 already introduced (trigger_reason). Every other column,
+        including goal_distance_before/after and conflict_type (already
+        exercised by Phase 3B-2B), must stay identical with or without a
+        monitor attached."""
+        import csv
+        import io
+        import tempfile
+
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.common.episode_logger import EpisodeLogger
+
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        actions = {0: [RIGHT] * 8, 1: [LEFT] * 8}
+
+        with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+            logger_alone = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp1)
+            run_il.run_episode(
+                _FixedActionPolicy(actions), grid, starts, goals,
+                max_steps=8, logger=logger_alone, monitor=None)
+            path_alone = logger_alone.write_steps()
+
+            logger_with_monitor = EpisodeLogger("x", scenario="s", mode="IL", out_dir=tmp2)
+            monitor = DeadlockMonitor()
+            run_il.run_episode(
+                _FixedActionPolicy(actions), grid, starts, goals,
+                max_steps=8, logger=logger_with_monitor, monitor=monitor)
+            path_with_monitor = logger_with_monitor.write_steps()
+
+            rows_alone = list(csv.DictReader(io.StringIO(path_alone.read_text(encoding="utf-8"))))
+            rows_with_monitor = list(csv.DictReader(io.StringIO(path_with_monitor.read_text(encoding="utf-8"))))
+
+        self.assertEqual(len(rows_alone), len(rows_with_monitor))
+        self.assertEqual(list(rows_alone[0].keys()), list(rows_with_monitor[0].keys()))
+        for r1, r2 in zip(rows_alone, rows_with_monitor):
+            self.assertEqual(r1["trigger_reason"], "")
+            for key in r1:
+                if key == "trigger_reason":
+                    continue
+                self.assertEqual(r1[key], r2[key], f"column {key!r} differs: {r1[key]!r} vs {r2[key]!r}")
+        # Confirm persistent_conflict was actually engaged by this run (so
+        # the "adds nothing to the CSV" result isn't vacuous).
+        self.assertEqual(monitor.result.persistent_conflict_status, "OK")
+        self.assertEqual(monitor.result.current_persistent_conflict_streak, 4)
+
+    def test_corridor_bay_n2_persistent_conflict_through_run_episode(self):
+        """Approval condition 7 (원본 Corridor), real checkpoint."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_corridor_bay_n2.json")
+        monitor = DeadlockMonitor()
+        run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=20,
+                            logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 16)  # 20 - 5 + 1
+        self.assertEqual(r.current_persistent_conflict_key, ("vertex", (2, 5), frozenset({0, 1})))
+        self.assertEqual(r.persistent_conflict_incomplete_steps, 0)
+        # Full-repeat/no_progress untouched by this wiring.
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.first_seen, 4)
+        self.assertEqual(r.no_progress_status, "OK")
+        self.assertEqual(r.current_no_progress_streaks, ((0, 16), (1, 16)))
+
+    def test_intersection_n2_persistent_conflict_through_run_episode(self):
+        """Approval condition 7 (Intersection), real checkpoint."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_intersection_n2.json")
+        monitor = DeadlockMonitor()
+        run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=10,
+                            logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 9)  # 10 - 2 + 1
+        self.assertEqual(r.current_persistent_conflict_key, ("vertex", (3, 3), frozenset({0, 1})))
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.first_seen, 1)
+
+    def test_bottleneck_n4_persistent_conflict_through_run_episode(self):
+        """Approval condition 7 (Bottleneck), real checkpoint."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "controlled" / "scenario_bottleneck_n4.json")
+        monitor = DeadlockMonitor()
+        run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=10,
+                            logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 9)  # 10 - 2 + 1
+        self.assertEqual(r.current_persistent_conflict_key, ("vertex", (2, 7), frozenset({2, 3})))
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.first_seen, 1)
+
+    def test_edge_perturbation_persistent_conflict_through_run_episode(self):
+        """Approval condition 7 (Edge perturbation), fixed-action policy
+        driven through the real run_episode() path (same scenario/actions
+        already cross-checked directly against DeadlockMonitor in
+        TestPersistentConflictCandidateReal)."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load(
+            "scenarios/experimental_v1/scenario_corridor_bay_n2_3rdagent_perturbation.json")
+        actions = {
+            0: [RIGHT] * 8,
+            1: [LEFT] * 8,
+            2: [LEFT, LEFT, LEFT, LEFT, WAIT, WAIT, WAIT, WAIT],
+        }
+        monitor = DeadlockMonitor()
+        run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                            max_steps=8, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 5)
+        self.assertEqual(r.current_persistent_conflict_key,
+                          ("edge", frozenset({(2, 4), (2, 5)}), frozenset({0, 1})))
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.blocking_type, "EDGE")
+
+    def test_success_cycle_ring_n4_persistent_conflict_no_false_candidate(self):
+        """Approval condition 7 (성공 Cycle)."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_cycle_ring_n4.json")
+        actions = {0: [RIGHT, RIGHT], 1: [DOWN, DOWN], 2: [LEFT, LEFT], 3: [UP, UP]}
+        monitor = DeadlockMonitor()
+        result = run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                                     max_steps=2, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertTrue(result["all_at_goal"])
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 0)
+        self.assertIsNone(r.current_persistent_conflict_key)
+        self.assertEqual(r.trigger_type, "NONE")
+
+    def test_success_smoke_scenario_persistent_conflict_no_false_candidate(self):
+        """Approval condition 7 (성공 Smoke), real checkpoint."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+        from src.il.policy import NavHintPolicy
+
+        ckpt = PROJECT_ROOT / "checkpoints" / "cnn_navhint.pt"
+        grid, starts, goals = run_il.load_scenario(
+            PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3.json")
+        monitor = DeadlockMonitor()
+        result = run_il.run_episode(NavHintPolicy(ckpt), grid, starts, goals, max_steps=160,
+                                     logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertTrue(result["all_at_goal"])
+        self.assertEqual(result["steps"], 9)
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 0)
+        self.assertIsNone(r.current_persistent_conflict_key)
+
+    def test_ki1_bottleneck_convoy_persistent_conflict_not_suppressed_by_overlap(self):
+        """Approval condition 7 (KI-1), kept as its own test per this
+        file's established KI-1-separation discipline -- persistent_conflict
+        must be tracked normally alongside the overlap integrity issue,
+        never pooled into accuracy statistics."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
+        actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
+        monitor = DeadlockMonitor()
+        run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
+                            max_steps=4, logger=None, monitor=monitor)
+        r = monitor.result
+        self.assertEqual(r.overlap_integrity_status, "INTEGRITY_ISSUE")
+        self.assertGreater(r.overlap_timesteps, 0)
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.persistent_conflict_status, "OK")
+        self.assertEqual(r.current_persistent_conflict_streak, 3)
+        self.assertEqual(r.current_persistent_conflict_key,
+                          ("vertex", (2, 1), frozenset({0, 1, 2, 3})))
+        self.assertEqual(r.persistent_conflict_incomplete_steps, 0)
+
+    def test_monitor_on_off_trajectory_and_actions_identical_with_persistent_conflict_wired(self):
+        """Approval condition 8: re-confirms ON/OFF equality now that
+        current_positions/intended_positions are also computed and fed
+        in whenever a monitor is attached (observe_step() is read-only,
+        so this must not perturb policy.act()/sim.step() at all)."""
+        import scripts.run_il as run_il
+        from src.common.deadlock_monitor import DeadlockMonitor
+
+        grid, starts, goals = load("scenarios/controlled/scenario_corridor_bay_n2.json")
+        result_no_monitor = run_il.run_episode(
+            _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8}), grid, starts, goals,
+            max_steps=8, logger=None, monitor=None)
+        result_with_monitor = run_il.run_episode(
+            _FixedActionPolicy({0: [RIGHT] * 8, 1: [LEFT] * 8}), grid, starts, goals,
+            max_steps=8, logger=None, monitor=DeadlockMonitor())
+
+        self.assertEqual(result_no_monitor["steps"], result_with_monitor["steps"])
+        self.assertEqual(result_no_monitor["trajectory"], result_with_monitor["trajectory"])
+        self.assertEqual(result_no_monitor["actions"], result_with_monitor["actions"])
+        self.assertEqual(result_no_monitor["all_at_goal"], result_with_monitor["all_at_goal"])
+        self.assertEqual(result_no_monitor["timed_out"], result_with_monitor["timed_out"])
+        self.assertEqual(result_no_monitor["final_positions"], result_with_monitor["final_positions"])
 
 
 if __name__ == "__main__":
