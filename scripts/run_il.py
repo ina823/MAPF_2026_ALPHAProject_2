@@ -34,7 +34,8 @@ DEFAULT_SCENARIO = PROJECT_ROOT / "scenarios" / "smoke" / "scenario_empty_s11_n3
 DEFAULT_MAX_STEPS = 160  # same default as Alpha 1 scripts/eval_flow.py
 
 
-def _log_step(logger, sim, policy, before_positions, actions, info, done, trigger_reason=""):
+def _log_step(logger, sim, policy, before_positions, actions, info, done,
+              trigger_reason="", integrity_abort=False):
     """Bridge one simulator step into EpisodeLogger rows (IL-specific glue).
 
     Lives here, not in the simulator/policy/logger, so that MAPFStepSimulator
@@ -59,7 +60,10 @@ def _log_step(logger, sim, policy, before_positions, actions, info, done, trigge
     not compute, and must never be read as, a deadlock verdict.
     """
     success = bool(info["all_at_goal"])
-    failure_reason = "timeout" if (done and info["timed_out"] and not success) else ""
+    if integrity_abort:
+        failure_reason = "integrity_overlap"
+    else:
+        failure_reason = "timeout" if (done and info["timed_out"] and not success) else ""
     for agent_id in sim._agent_ids:
         current = before_positions[agent_id]
         action_id = actions[agent_id]
@@ -91,7 +95,7 @@ def _log_step(logger, sim, policy, before_positions, actions, info, done, trigge
     )
 
 
-def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=None):
+def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=None, safety=None):
     """Run one episode. starts/goals: {agent_id: (row, col)}.
 
     Returns a dict with steps / done / all_at_goal / timed_out, the final
@@ -124,13 +128,20 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
     policy.reset(grid, goals)
     if monitor is not None:
         monitor.reset(sim._positions, goals)
+    if safety is not None:
+        if monitor is None:
+            raise ValueError("Safety-only requires a DeadlockMonitor")
+        safety.reset()
 
     trajectory = [{aid: tuple(pos) for aid, pos in sim._positions.items()}]
     actions_log = []
     info = {"t": 0, "all_at_goal": False, "timed_out": False}
     done = False
     for _ in range(max_steps):
+        integrity_abort = False
         actions = policy.act(obs, sim._positions)
+        if safety is not None:
+            actions = safety.apply(actions)
         # Phase 3B-2B: monitor's no_progress signal needs the same
         # pre-step snapshot logger's _log_step already needed -- extend
         # the guard, not the computation itself, so a bare baseline run
@@ -138,6 +149,13 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
         need_before_positions = logger is not None or monitor is not None
         before_positions = {aid: sim._positions[aid] for aid in sim._agent_ids} if need_before_positions else None
         obs, done, info = sim.step(actions)
+        step_overlap = (
+            safety is not None
+            and len(set(sim._positions.values())) != len(sim._positions)
+        )
+
+        if step_overlap:
+            integrity_abort = True
         actions_log.append(dict(actions))
         trajectory.append({aid: tuple(pos) for aid, pos in sim._positions.items()})
 
@@ -183,15 +201,27 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
                 goal_distance_after=goal_distance_after,
             )
             trigger_reason = r.trigger_reason_code
+            if (
+                safety is not None
+                and r.trigger_reason_code == "TRIGGER_FULL_REPEAT"
+                and r.trigger_timestep == info["t"]
+                and r.overlap_integrity_status == "CLEAN"
+            ):
+                safety.arm(sim._positions, goals)
 
         if logger is not None:
-            _log_step(logger, sim, policy, before_positions, actions, info, done,
-                      trigger_reason=trigger_reason)
-        if done:
+            _log_step(
+                logger, sim, policy, before_positions,
+                actions, info, done,
+                trigger_reason=trigger_reason,
+                integrity_abort=integrity_abort,
+            )
+
+        if done or integrity_abort:
             break
 
     final = {aid: tuple(pos) for aid, pos in sim._positions.items()}
-    return {
+    result = {
         "steps": info["t"],
         "done": bool(done),
         "all_at_goal": bool(info["all_at_goal"]),
@@ -201,6 +231,16 @@ def run_episode(policy, grid, starts, goals, max_steps, logger=None, monitor=Non
         "trajectory": trajectory,
         "actions": actions_log,
     }
+
+    # Add new metadata only in Safety-only runs.
+    if safety is not None:
+        result["integrity_abort"] = integrity_abort
+        result["integrity_abort_timestep"] = (
+            info["t"] if integrity_abort else None
+        )
+
+    return result
+
 
 
 def load_scenario(path):
@@ -233,6 +273,17 @@ def main(argv=None):
                           "only -- see docs/deadlock_definition_v1.md) and print its "
                           "result; observation only, never changes the rollout "
                           "(default: off, identical to pre-monitor behaviour)")
+    ap.add_argument(
+        "--safety-only",
+        action="store_true",
+        help="enable Safety-only v0 after first Full-repeat Trigger",
+    )
+    ap.add_argument(
+        "--safety-hold-steps",
+        type=int,
+        default=2,
+        help="development-only WAIT duration (default: 2)",
+    )
     args = ap.parse_args(argv)
 
     policy = NavHintPolicy(args.ckpt)
@@ -241,13 +292,23 @@ def main(argv=None):
     logger = None
     if args.log:
         from src.common.episode_logger import EpisodeLogger, make_run_id
-        run_id = make_run_id(args.scenario.name, "IL")
-        logger = EpisodeLogger(run_id, scenario=args.scenario.name, mode="IL")
+        mode = "SAFETY_V0" if args.safety_only else "IL"
+        run_id = make_run_id(args.scenario.name, mode)
+        logger = EpisodeLogger(
+            run_id, scenario=args.scenario.name, mode=mode
+        )
 
     monitor = None
-    if args.monitor:
+    if args.monitor or args.safety_only:
         from src.common.deadlock_monitor import DeadlockMonitor
         monitor = DeadlockMonitor()
+
+    safety = None
+    if args.safety_only:
+        from src.common.safety_only import SafetyOnlyV0
+        safety = SafetyOnlyV0(
+            hold_steps=args.safety_hold_steps
+        )
 
     # Phase 3B-4: fail BEFORE running the episode (not just before the
     # write that would collide) if this run_id's target CSV path(s)
@@ -263,7 +324,10 @@ def main(argv=None):
                 + ", ".join(str(p) for p in existing)
             )
 
-    result = run_episode(policy, grid, starts, goals, args.max_steps, logger=logger, monitor=monitor)
+    result = run_episode(
+        policy, grid, starts, goals, args.max_steps,
+        logger=logger, monitor=monitor, safety=safety,
+    )
 
     print(f"checkpoint : {args.ckpt.name}  (hint_mode={policy.hint_mode}, goal_dim={policy.model['goal_dim']})")
     print(f"scenario   : {args.scenario.name}  map={grid.shape}  agents={len(goals)}")
@@ -272,6 +336,19 @@ def main(argv=None):
             print(f"  t={t:3d}  {frame}")
     print(f"steps={result['steps']}  all_at_goal={result['all_at_goal']}  timed_out={result['timed_out']}")
     print(f"final positions == goals : {result['final_positions'] == result['goals']}")
+    if args.safety_only:
+        if result["integrity_abort"]:
+            print(
+                "termination : INTEGRITY_ABORT "
+                f"(t={result['integrity_abort_timestep']})"
+            )
+        elif result["all_at_goal"]:
+            print("termination : SUCCESS")
+        elif result["timed_out"]:
+            print("termination : TIMEOUT")
+        else:
+            print("termination : OTHER")
+
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +380,7 @@ def main(argv=None):
               f"overlap_integrity_status={r.overlap_integrity_status} "
               f"overlap_timesteps={r.overlap_timesteps}")
     return 0
+
 
 
 if __name__ == "__main__":
