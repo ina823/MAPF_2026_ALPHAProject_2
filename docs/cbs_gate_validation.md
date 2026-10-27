@@ -122,3 +122,31 @@ Important:
 - timeout != unsolvable
 - CBS trigger success, CBS recoverability, recovery execution success,
   and final Operational Deadlock Label are separate validation stages.
+
+## 6. Reproduction Command
+
+Run from the project root:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.validate_cbs_gate `
+  --common-root ..\MAPF_common_logging `
+  --timeout 30 `
+  --json-out docs\evidence\cbs_gate_paths.json |
+Tee-Object -FilePath docs\evidence\cbs_gate_recovery_log.txt
+```
+
+Generated evidence:
+
+- `docs/evidence/cbs_gate_paths.json`
+  - Full CBS paths
+  - trigger payload
+  - latency
+  - timestep-level recovery execution data
+  - final execution result
+
+- `docs/evidence/cbs_gate_recovery_log.txt`
+  - Human-readable console execution log
+
+Validation script:
+
+- `scripts/validate_cbs_gate.py`
