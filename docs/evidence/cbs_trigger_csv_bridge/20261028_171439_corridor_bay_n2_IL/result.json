@@ -1,0 +1,357 @@
+{
+  "experiment": "offline_logged_trigger_to_cbs_replay",
+  "is_automatic_hybrid_runner": false,
+  "run_id": "20261028_171439_corridor_bay_n2_IL",
+  "monitor_trigger_reason": "TRIGGER_FULL_REPEAT",
+  "trigger_timestep": 5,
+  "first_seen": 4,
+  "agent_ids": [
+    0,
+    1
+  ],
+  "current_positions": [
+    [
+      2,
+      4
+    ],
+    [
+      2,
+      6
+    ]
+  ],
+  "goals": [
+    [
+      2,
+      10
+    ],
+    [
+      2,
+      0
+    ]
+  ],
+  "monitor_source_sha": "3c390627ab949fc8308986e31abb71dc381cae01",
+  "cbs_source_sha": "5446912a1ec1a179c012ffd7d829d2895d09f5b7",
+  "timeout_sec": 30,
+  "status": "success",
+  "error": null,
+  "latency_ms": 195.297,
+  "paths": {
+    "0": [
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        2,
+        8
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        2,
+        10
+      ]
+    ],
+    "1": [
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        0
+      ]
+    ]
+  },
+  "collision_free": true,
+  "start_match": true,
+  "goal_match": true,
+  "path_followed_exactly": true,
+  "overlap_timesteps": 0,
+  "all_at_goal": true,
+  "execution_success": true,
+  "execution_log": [
+    {
+      "recovery_t": 1,
+      "actions": {
+        "0": 4,
+        "1": 2
+      },
+      "actual": {
+        "0": [
+          2,
+          4
+        ],
+        "1": [
+          2,
+          5
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          4
+        ],
+        "1": [
+          2,
+          5
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 2,
+      "actions": {
+        "0": 3,
+        "1": 0
+      },
+      "actual": {
+        "0": [
+          2,
+          5
+        ],
+        "1": [
+          1,
+          5
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          5
+        ],
+        "1": [
+          1,
+          5
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 3,
+      "actions": {
+        "0": 3,
+        "1": 1
+      },
+      "actual": {
+        "0": [
+          2,
+          6
+        ],
+        "1": [
+          2,
+          5
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          6
+        ],
+        "1": [
+          2,
+          5
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 4,
+      "actions": {
+        "0": 3,
+        "1": 2
+      },
+      "actual": {
+        "0": [
+          2,
+          7
+        ],
+        "1": [
+          2,
+          4
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          7
+        ],
+        "1": [
+          2,
+          4
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 5,
+      "actions": {
+        "0": 3,
+        "1": 2
+      },
+      "actual": {
+        "0": [
+          2,
+          8
+        ],
+        "1": [
+          2,
+          3
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          8
+        ],
+        "1": [
+          2,
+          3
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 6,
+      "actions": {
+        "0": 3,
+        "1": 2
+      },
+      "actual": {
+        "0": [
+          2,
+          9
+        ],
+        "1": [
+          2,
+          2
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          9
+        ],
+        "1": [
+          2,
+          2
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 7,
+      "actions": {
+        "0": 3,
+        "1": 2
+      },
+      "actual": {
+        "0": [
+          2,
+          10
+        ],
+        "1": [
+          2,
+          1
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          10
+        ],
+        "1": [
+          2,
+          1
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    },
+    {
+      "recovery_t": 8,
+      "actions": {
+        "0": 4,
+        "1": 2
+      },
+      "actual": {
+        "0": [
+          2,
+          10
+        ],
+        "1": [
+          2,
+          0
+        ]
+      },
+      "expected": {
+        "0": [
+          2,
+          10
+        ],
+        "1": [
+          2,
+          0
+        ]
+      },
+      "step_match": true,
+      "overlap": false
+    }
+  ]
+}
