@@ -1,0 +1,649 @@
+{
+  "variant": "bottleneck_n4_convoy",
+  "input_type": "original_starts_not_trigger_state",
+  "scenario_file": "C:\\Users\\LG\\MAPF_workspace\\MAPF_common_logging\\scenarios\\controlled_variants\\scenario_bottleneck_n4_convoy.json",
+  "timeout_sec": 30,
+  "status": "success",
+  "latency_ms": 1350.315,
+  "solver_stdout_file": "solver_stdout.txt",
+  "solver_stderr_file": "solver_stderr.txt",
+  "source_code_sha": "6276f5e49c6d4216eb931fb6417c004e2cf5d1a0",
+  "scenario_source_sha": "3c390627ab949fc8308986e31abb71dc381cae01",
+  "solver_sha": "89f69e11944b172e11c3bcbbecc57344eaa4be9c",
+  "execution_success": true,
+  "map_file": "C:\\Users\\LG\\MAPF_workspace\\MAPF_common_logging\\scenarios\\controlled\\map_bottleneck_n4.npy",
+  "num_agents": 4,
+  "starts_row_col": [
+    [
+      0,
+      1
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      3,
+      1
+    ],
+    [
+      4,
+      1
+    ]
+  ],
+  "goals_row_col": [
+    [
+      0,
+      7
+    ],
+    [
+      1,
+      7
+    ],
+    [
+      3,
+      7
+    ],
+    [
+      4,
+      7
+    ]
+  ],
+  "replay": {
+    "start_match": true,
+    "goal_match": true,
+    "collision_free": true,
+    "path_followed_exactly": true,
+    "overlap_timesteps": 0,
+    "all_at_goal": true,
+    "execution_success": true,
+    "action_array_shape": [
+      12,
+      4
+    ],
+    "execution_log": [
+      {
+        "t": 1,
+        "actions": {
+          "0": 3,
+          "1": 3,
+          "2": 3,
+          "3": 3
+        },
+        "expected": {
+          "0": [
+            0,
+            2
+          ],
+          "1": [
+            1,
+            2
+          ],
+          "2": [
+            3,
+            2
+          ],
+          "3": [
+            4,
+            2
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            2
+          ],
+          "1": [
+            1,
+            2
+          ],
+          "2": [
+            3,
+            2
+          ],
+          "3": [
+            4,
+            2
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 2,
+        "actions": {
+          "0": 3,
+          "1": 3,
+          "2": 3,
+          "3": 3
+        },
+        "expected": {
+          "0": [
+            0,
+            3
+          ],
+          "1": [
+            1,
+            3
+          ],
+          "2": [
+            3,
+            3
+          ],
+          "3": [
+            4,
+            3
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            3
+          ],
+          "1": [
+            1,
+            3
+          ],
+          "2": [
+            3,
+            3
+          ],
+          "3": [
+            4,
+            3
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 3,
+        "actions": {
+          "0": 1,
+          "1": 2,
+          "2": 0,
+          "3": 4
+        },
+        "expected": {
+          "0": [
+            1,
+            3
+          ],
+          "1": [
+            1,
+            2
+          ],
+          "2": [
+            2,
+            3
+          ],
+          "3": [
+            4,
+            3
+          ]
+        },
+        "actual": {
+          "0": [
+            1,
+            3
+          ],
+          "1": [
+            1,
+            2
+          ],
+          "2": [
+            2,
+            3
+          ],
+          "3": [
+            4,
+            3
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 4,
+        "actions": {
+          "0": 1,
+          "1": 3,
+          "2": 3,
+          "3": 4
+        },
+        "expected": {
+          "0": [
+            2,
+            3
+          ],
+          "1": [
+            1,
+            3
+          ],
+          "2": [
+            2,
+            4
+          ],
+          "3": [
+            4,
+            3
+          ]
+        },
+        "actual": {
+          "0": [
+            2,
+            3
+          ],
+          "1": [
+            1,
+            3
+          ],
+          "2": [
+            2,
+            4
+          ],
+          "3": [
+            4,
+            3
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 5,
+        "actions": {
+          "0": 3,
+          "1": 1,
+          "2": 3,
+          "3": 0
+        },
+        "expected": {
+          "0": [
+            2,
+            4
+          ],
+          "1": [
+            2,
+            3
+          ],
+          "2": [
+            2,
+            5
+          ],
+          "3": [
+            3,
+            3
+          ]
+        },
+        "actual": {
+          "0": [
+            2,
+            4
+          ],
+          "1": [
+            2,
+            3
+          ],
+          "2": [
+            2,
+            5
+          ],
+          "3": [
+            3,
+            3
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 6,
+        "actions": {
+          "0": 3,
+          "1": 3,
+          "2": 3,
+          "3": 0
+        },
+        "expected": {
+          "0": [
+            2,
+            5
+          ],
+          "1": [
+            2,
+            4
+          ],
+          "2": [
+            2,
+            6
+          ],
+          "3": [
+            2,
+            3
+          ]
+        },
+        "actual": {
+          "0": [
+            2,
+            5
+          ],
+          "1": [
+            2,
+            4
+          ],
+          "2": [
+            2,
+            6
+          ],
+          "3": [
+            2,
+            3
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 7,
+        "actions": {
+          "0": 0,
+          "1": 3,
+          "2": 3,
+          "3": 3
+        },
+        "expected": {
+          "0": [
+            1,
+            5
+          ],
+          "1": [
+            2,
+            5
+          ],
+          "2": [
+            2,
+            7
+          ],
+          "3": [
+            2,
+            4
+          ]
+        },
+        "actual": {
+          "0": [
+            1,
+            5
+          ],
+          "1": [
+            2,
+            5
+          ],
+          "2": [
+            2,
+            7
+          ],
+          "3": [
+            2,
+            4
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 8,
+        "actions": {
+          "0": 0,
+          "1": 0,
+          "2": 1,
+          "3": 3
+        },
+        "expected": {
+          "0": [
+            0,
+            5
+          ],
+          "1": [
+            1,
+            5
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            2,
+            5
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            5
+          ],
+          "1": [
+            1,
+            5
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            2,
+            5
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 9,
+        "actions": {
+          "0": 3,
+          "1": 3,
+          "2": 4,
+          "3": 3
+        },
+        "expected": {
+          "0": [
+            0,
+            6
+          ],
+          "1": [
+            1,
+            6
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            2,
+            6
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            6
+          ],
+          "1": [
+            1,
+            6
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            2,
+            6
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 10,
+        "actions": {
+          "0": 3,
+          "1": 3,
+          "2": 4,
+          "3": 1
+        },
+        "expected": {
+          "0": [
+            0,
+            7
+          ],
+          "1": [
+            1,
+            7
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            3,
+            6
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            7
+          ],
+          "1": [
+            1,
+            7
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            3,
+            6
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 11,
+        "actions": {
+          "0": 4,
+          "1": 4,
+          "2": 4,
+          "3": 1
+        },
+        "expected": {
+          "0": [
+            0,
+            7
+          ],
+          "1": [
+            1,
+            7
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            4,
+            6
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            7
+          ],
+          "1": [
+            1,
+            7
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            4,
+            6
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      },
+      {
+        "t": 12,
+        "actions": {
+          "0": 4,
+          "1": 4,
+          "2": 4,
+          "3": 3
+        },
+        "expected": {
+          "0": [
+            0,
+            7
+          ],
+          "1": [
+            1,
+            7
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            4,
+            7
+          ]
+        },
+        "actual": {
+          "0": [
+            0,
+            7
+          ],
+          "1": [
+            1,
+            7
+          ],
+          "2": [
+            3,
+            7
+          ],
+          "3": [
+            4,
+            7
+          ]
+        },
+        "step_match": true,
+        "overlap": false
+      }
+    ],
+    "final_positions": {
+      "0": [
+        0,
+        7
+      ],
+      "1": [
+        1,
+        7
+      ],
+      "2": [
+        3,
+        7
+      ],
+      "3": [
+        4,
+        7
+      ]
+    }
+  }
+}

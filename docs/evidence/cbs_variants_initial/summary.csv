@@ -1,0 +1,10 @@
+﻿variant,input_type,num_agents,timeout_sec,status,latency_ms,execution_success
+bottleneck_n4_convoy,original_starts_not_trigger_state,4,30,success,1350.315,True
+bottleneck_n4_imbalanced,original_starts_not_trigger_state,4,30,success,7333.194,True
+bottleneck_n4_tightdoor,original_starts_not_trigger_state,4,30,success,1671.626,True
+corridor_bay_n2_3agent,original_starts_not_trigger_state,3,30,success,3954.969,True
+corridor_bay_n2_4agent,original_starts_not_trigger_state,4,30,timeout,30045.912,
+corridor_bay_n2_offset,original_starts_not_trigger_state,2,30,success,347.353,True
+intersection_n2_4way,original_starts_not_trigger_state,4,30,success,12480.303,True
+intersection_n2_lshape,original_starts_not_trigger_state,2,30,success,173.954,True
+intersection_n2_tight,original_starts_not_trigger_state,2,30,success,171.002,True

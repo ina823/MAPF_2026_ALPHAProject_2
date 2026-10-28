@@ -1,0 +1,55 @@
+[
+  {
+    "variant": "corridor_bay_n2_4agent",
+    "input_type": "original_starts_not_trigger_state",
+    "scenario_file": "C:\\Users\\LG\\MAPF_workspace\\MAPF_common_logging\\scenarios\\controlled_variants\\scenario_corridor_bay_n2_4agent.json",
+    "timeout_sec": 60,
+    "status": "timeout",
+    "latency_ms": 60028.81,
+    "solver_stdout_file": "solver_stdout.txt",
+    "solver_stderr_file": "solver_stderr.txt",
+    "source_code_sha": "6276f5e49c6d4216eb931fb6417c004e2cf5d1a0",
+    "scenario_source_sha": "3c390627ab949fc8308986e31abb71dc381cae01",
+    "solver_sha": "89f69e11944b172e11c3bcbbecc57344eaa4be9c",
+    "execution_success": null,
+    "map_file": "C:\\Users\\LG\\MAPF_workspace\\MAPF_common_logging\\scenarios\\controlled\\map_corridor_bay_n2.npy",
+    "num_agents": 4,
+    "starts_row_col": [
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ]
+    ],
+    "goals_row_col": [
+      [
+        2,
+        9
+      ],
+      [
+        2,
+        10
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        2,
+        1
+      ]
+    ],
+    "error": "atb033 CBS timed out after 60s\nstdout:\n\nstderr:\n"
+  }
+]

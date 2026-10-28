@@ -1,0 +1,13 @@
+{
+  "audit_type": "initial_start_CBS_not_trigger_recovery",
+  "timeout_sec": 60,
+  "common_root": "C:\\Users\\LG\\MAPF_workspace\\MAPF_common_logging",
+  "source_code_sha": "6276f5e49c6d4216eb931fb6417c004e2cf5d1a0",
+  "scenario_source_sha": "3c390627ab949fc8308986e31abb71dc381cae01",
+  "solver_sha": "89f69e11944b172e11c3bcbbecc57344eaa4be9c",
+  "python_executable": "C:\\Users\\LG\\MAPF_workspace\\MAPF_2026_ALPHAProject_2\\.venv\\Scripts\\python.exe",
+  "solver_root": "C:\\Users\\LG\\MAPF_workspace\\MAPF_2026_ALPHAProject_2\\third_party\\multi_agent_path_planning\\centralized\\cbs",
+  "variants": [
+    "scenario_corridor_bay_n2_4agent.json"
+  ]
+}
