@@ -1,0 +1,51 @@
+{
+  "scenario_id": "scen_bottleneck_n4",
+  "map_id": "bottleneck_n4",
+  "map_file": "map_bottleneck_n4.npy",
+  "agents": [
+    {
+      "agent_id": 0,
+      "start": [
+        1,
+        1
+      ],
+      "goal": [
+        7,
+        1
+      ]
+    },
+    {
+      "agent_id": 1,
+      "start": [
+        1,
+        3
+      ],
+      "goal": [
+        7,
+        3
+      ]
+    },
+    {
+      "agent_id": 2,
+      "start": [
+        7,
+        0
+      ],
+      "goal": [
+        1,
+        0
+      ]
+    },
+    {
+      "agent_id": 3,
+      "start": [
+        7,
+        4
+      ],
+      "goal": [
+        1,
+        4
+      ]
+    }
+  ]
+}
