@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, Sequence
+from src.path_guard import validate_path_guard
 
 from src.cbs_adapter import (
     CBSAdapter,
@@ -69,6 +70,25 @@ def replan(
         starts=current_positions,
         goals=goals,
         grid=grid_map,
+    )
+
+    # CBS가 반환한 Agent ID는 0부터 시작하는 인덱스
+    starts_by_id = {
+        i: tuple(pos)
+        for i, pos in enumerate(current_positions)
+    }
+
+    goals_by_id = {
+        i: tuple(pos)
+        for i, pos in enumerate(goals)
+    }
+
+    # CBS 경로의 안전 조건 검사
+    validate_path_guard(
+        paths=replanned_paths,
+        current_positions=starts_by_id,
+        goals=goals_by_id,
+        grid_map=grid_map,
     )
 
     return replanned_paths
