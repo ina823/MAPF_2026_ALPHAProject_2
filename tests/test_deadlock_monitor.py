@@ -228,18 +228,40 @@ class TestKnownQuirkKI1Separation(unittest.TestCase):
 
     def test_bottleneck_n4_convoy_overlap_does_not_suppress_trigger(self):
         # outputs/logs/20261010_212255_bottleneck_n4_convoy_IL_steps.csv
-        # (Category B, overlap_timesteps=160 at 160 steps -- the documented
-        # KI-1 single-pass vertex-resolution quirk, not a new bug.)
+        # (Category B, overlap_timesteps=160 at 160 steps) recorded the
+        # pre-fix KI-1 single-pass quirk: INTEGRITY_ISSUE, first_seen=1,
+        # trigger_timestep=2. Since 32e2158 the cascade is resolved: 1 and 2
+        # bounce off (2,1), then 0 and 3 bounce off the cells 1 and 2 still
+        # hold, so all four agents stay on S_0 from t=1 -- no overlap, and
+        # S_0 repeats immediately (first_seen=0, trigger_timestep=1).
         grid, starts, goals = load("scenarios/controlled_variants/scenario_bottleneck_n4_convoy.json")
         actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
         r = replay(grid, starts, goals, actions, max_steps=4)
-        self.assertEqual(r.overlap_integrity_status, "INTEGRITY_ISSUE")
-        self.assertGreater(r.overlap_timesteps, 0)
+        self.assertEqual(r.overlap_integrity_status, "CLEAN")
+        self.assertEqual(r.overlap_timesteps, 0)
         # Trigger/blocking computation must still proceed normally.
         self.assertEqual(r.trigger_type, "FULL")
-        self.assertEqual(r.first_seen, 1)
-        self.assertEqual(r.trigger_timestep, 2)
+        self.assertEqual(r.first_seen, 0)
+        self.assertEqual(r.trigger_timestep, 1)
         self.assertEqual(r.blocking_type, "VERTEX")
+
+    def test_synthetic_injected_overlap_still_detected_without_suppressing_trigger(self):
+        """SYNTHETIC: since 32e2158 no real scenario reproduces KI-1, so the
+        Monitor's overlap tracking is exercised here with hand-fed
+        overlapping positions (not claimed as real simulator output)."""
+        m = DeadlockMonitor()
+        m.reset({0: (0, 0), 1: (0, 1)}, goals={0: (9, 9), 1: (9, 8)})
+        r = m.observe_step(1, {0: (0, 0), 1: (0, 1)}, {0: "none", 1: "none"})
+        self.assertEqual(r.overlap_integrity_status, "CLEAN")
+        self.assertEqual(r.overlap_timesteps, 0)
+        m.observe_step(2, {0: (0, 1), 1: (0, 1)}, {0: "none", 1: "vertex"})
+        r = m.observe_step(3, {0: (0, 1), 1: (0, 1)}, {0: "vertex", 1: "vertex"})
+        self.assertEqual(r.overlap_integrity_status, "INTEGRITY_ISSUE")
+        self.assertEqual(r.overlap_timesteps, 2)
+        # Trigger computation is not suppressed by the overlap.
+        self.assertEqual(r.trigger_type, "FULL")
+        self.assertEqual(r.first_seen, 0)
+        self.assertEqual(r.trigger_timestep, 1)
 
 
 class TestMonitorLogicSynthetic(unittest.TestCase):
@@ -539,13 +561,18 @@ class TestPersistentConflictKI1Separation(unittest.TestCase):
         actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
         per_step = replay_with_persistent_conflict(grid, starts, goals, actions, max_steps=4)
         last = per_step[-1]
-        self.assertEqual(last.overlap_integrity_status, "INTEGRITY_ISSUE")
-        self.assertGreater(last.overlap_timesteps, 0)
-        # persistent_conflict tracking must still run normally alongside the
-        # KI-1 overlap, exactly like trigger_type/blocking_type already do.
+        # Pre-fix (KI-1) this was INTEGRITY_ISSUE; since 32e2158 the cascade
+        # is fully resolved and no two agents ever share a cell.
+        self.assertEqual(last.overlap_integrity_status, "CLEAN")
+        self.assertEqual(last.overlap_timesteps, 0)
+        # persistent_conflict tracking must still run normally, exactly like
+        # trigger_type/blocking_type already do.
         self.assertEqual(last.trigger_type, "FULL")
         self.assertEqual(last.persistent_conflict_status, "OK")
         self.assertEqual(last.persistent_conflict_incomplete_steps, 0)
+        # All four agents are blocked from t=1 on, so the live streak covers
+        # every step (pre-fix: 3, because the first step still moved 0 and 3).
+        self.assertEqual(last.current_persistent_conflict_streak, 4)
 
 
 class TestPersistentConflictOnlineVsOfflineTiming(unittest.TestCase):
@@ -828,14 +855,17 @@ class TestNoProgressKI1Separation(unittest.TestCase):
         actions = {0: [DOWN] * 4, 1: [DOWN] * 4, 2: [UP] * 4, 3: [UP] * 4}
         per_step = replay_with_no_progress(grid, starts, goals, actions, max_steps=4)
         last = per_step[-1]
-        self.assertEqual(last.overlap_integrity_status, "INTEGRITY_ISSUE")
-        self.assertGreater(last.overlap_timesteps, 0)
-        # no_progress tracking must still run normally alongside the KI-1
-        # overlap, exactly like trigger_type/blocking_type already do.
+        # Pre-fix (KI-1) this was INTEGRITY_ISSUE; since 32e2158 the cascade
+        # is fully resolved and no two agents ever share a cell.
+        self.assertEqual(last.overlap_integrity_status, "CLEAN")
+        self.assertEqual(last.overlap_timesteps, 0)
+        # no_progress tracking must still run normally, exactly like
+        # trigger_type/blocking_type already do.
         self.assertEqual(last.trigger_type, "FULL")
         self.assertEqual(last.no_progress_status, "OK")
         self.assertEqual(last.no_progress_incomplete_steps, 0)
-        self.assertEqual(len(dict(last.current_no_progress_streaks)), 4)
+        # Nobody moves on any step (pre-fix: agents 0 and 3 advanced at t=1).
+        self.assertEqual(dict(last.current_no_progress_streaks), {0: 4, 1: 4, 2: 4, 3: 4})
 
 
 class TestNoProgressSynthetic(unittest.TestCase):
@@ -1199,12 +1229,15 @@ class TestRunIlNoProgressWiring(unittest.TestCase):
             _FixedActionPolicy(actions), grid, starts, goals,
             max_steps=4, logger=None, monitor=monitor)
         r = monitor.result
-        self.assertEqual(r.overlap_integrity_status, "INTEGRITY_ISSUE")
-        self.assertGreater(r.overlap_timesteps, 0)
+        # Pre-fix (KI-1): INTEGRITY_ISSUE and streaks {0: 3, 1: 4, 2: 4, 3: 3}
+        # (0 and 3 still advanced at t=1 into an overlap). Since 32e2158 the
+        # cascade bounce keeps all four in place from t=1.
+        self.assertEqual(r.overlap_integrity_status, "CLEAN")
+        self.assertEqual(r.overlap_timesteps, 0)
         self.assertEqual(r.trigger_type, "FULL")
         self.assertEqual(r.no_progress_status, "OK")
         self.assertEqual(r.no_progress_incomplete_steps, 0)
-        self.assertEqual(dict(r.current_no_progress_streaks), {0: 3, 1: 4, 2: 4, 3: 3})
+        self.assertEqual(dict(r.current_no_progress_streaks), {0: 4, 1: 4, 2: 4, 3: 4})
 
     def test_success_cycle_ring_n4_no_false_candidate_through_run_episode(self):
         """Approval point 8 (성공 Cycle)."""
@@ -1445,13 +1478,16 @@ class TestTriggerReasonCsvRealScenarios(unittest.TestCase):
                                 max_steps=4, logger=logger, monitor=monitor)
             rows = self._csv_rows(logger.write_steps())
 
-        self.assertEqual(monitor.result.overlap_integrity_status, "INTEGRITY_ISSUE")
+        # Pre-fix (KI-1): INTEGRITY_ISSUE, t=1 TRIGGER_NONE, t>=2 FULL_REPEAT.
+        # Since 32e2158 nobody moves at t=1, so S_0 repeats immediately and
+        # every row from t=1 on reads TRIGGER_FULL_REPEAT.
+        self.assertEqual(monitor.result.overlap_integrity_status, "CLEAN")
+        self.assertEqual(monitor.result.trigger_timestep, 1)
         by_t = self._trigger_reason_by_timestep(rows)
         for t in range(1, 5):
             values = by_t[t]
             self.assertEqual(len(values), 1, f"t={t}: {values}")
-            expected = "TRIGGER_NONE" if t < 2 else "TRIGGER_FULL_REPEAT"
-            self.assertEqual(values.pop(), expected, f"t={t}")
+            self.assertEqual(values.pop(), "TRIGGER_FULL_REPEAT", f"t={t}")
 
 
 class TestRunIlPersistentConflictWiring(unittest.TestCase):
@@ -1650,13 +1686,19 @@ class TestRunIlPersistentConflictWiring(unittest.TestCase):
         run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
                             max_steps=4, logger=None, monitor=monitor)
         r = monitor.result
-        self.assertEqual(r.overlap_integrity_status, "INTEGRITY_ISSUE")
-        self.assertGreater(r.overlap_timesteps, 0)
+        # Pre-fix (KI-1): INTEGRITY_ISSUE, streak 3, key
+        # ("vertex", (2, 1), {0, 1, 2, 3}) -- all four overlapped pairs aimed
+        # at (2,1). Since 32e2158 each step has three vertex keys: (2,1)
+        # {1, 2}, plus the cascade cells (1,1) {0, 1} and (3,1) {2, 3}. All
+        # three reach streak 4; the existing max(streak, str(key)) tie-break
+        # picks (3,1).
+        self.assertEqual(r.overlap_integrity_status, "CLEAN")
+        self.assertEqual(r.overlap_timesteps, 0)
         self.assertEqual(r.trigger_type, "FULL")
         self.assertEqual(r.persistent_conflict_status, "OK")
-        self.assertEqual(r.current_persistent_conflict_streak, 3)
+        self.assertEqual(r.current_persistent_conflict_streak, 4)
         self.assertEqual(r.current_persistent_conflict_key,
-                          ("vertex", (2, 1), frozenset({0, 1, 2, 3})))
+                          ("vertex", (3, 1), frozenset({2, 3})))
         self.assertEqual(r.persistent_conflict_incomplete_steps, 0)
 
     def test_monitor_on_off_trajectory_and_actions_identical_with_persistent_conflict_wired(self):
@@ -1850,12 +1892,18 @@ class TestMonitorSidecarCsv(unittest.TestCase):
         run_il.run_episode(_FixedActionPolicy(actions), grid, starts, goals,
                             max_steps=4, logger=None, monitor=monitor)
         row = self._sidecar_row(monitor.result)
-        self.assertEqual(row["overlap_integrity_status"], "INTEGRITY_ISSUE")
-        self.assertEqual(row["overlap_timesteps"], "4")
-        self.assertEqual(row["trigger_type"], "FULL")  # not suppressed by overlap
-        self.assertEqual(row["current_persistent_conflict_streak"], "3")
-        self.assertEqual(row["current_persistent_conflict_key_agents"], "0;1;2;3")
-        self.assertEqual(row["current_no_progress_streaks"], "0=3;1=4;2=4;3=3")
+        # Pre-fix (KI-1): INTEGRITY_ISSUE, overlap_timesteps=4, streak 3,
+        # key agents 0;1;2;3, no_progress 0=3;1=4;2=4;3=3. Since 32e2158 the
+        # convoy is CLEAN and frozen from t=1 (see the persistent_conflict /
+        # no_progress KI-1 tests above for why each value changed).
+        self.assertEqual(row["overlap_integrity_status"], "CLEAN")
+        self.assertEqual(row["overlap_timesteps"], "0")
+        self.assertEqual(row["trigger_type"], "FULL")
+        self.assertEqual(row["current_persistent_conflict_streak"], "4")
+        self.assertEqual(row["current_persistent_conflict_key_type"], "vertex")
+        self.assertEqual(row["current_persistent_conflict_key_location"], "3,1")
+        self.assertEqual(row["current_persistent_conflict_key_agents"], "2;3")
+        self.assertEqual(row["current_no_progress_streaks"], "0=4;1=4;2=4;3=4")
 
     def test_not_computed_status_writes_blank_not_zero(self):
         """Approval condition 3: a blank cell must mean "not computed",

@@ -97,6 +97,10 @@ scenario JSON [x,y] --scenario_loader--> grid, starts/goals (row,col)
 - 영향: 위치 유일성을 가정하는 이후 단계(Wait-for graph, deadlock 판정)에 주의가 필요하다.
 - 처리: `tests/test_simulator_characterization.py::TestKnownQuirkKI1` 이 **현재 동작**을 그대로 고정한다.
   simulator 를 의도적으로 고칠 때 이 두 테스트를 같은 변경에서 갱신해야 한다.
+- **[Alpha 2 갱신] 32e2158 에서 수정됨.** 취소가 생기면 충돌이 없어질 때까지 다시 검사한다(연쇄 취소).
+  위 내용과 기존 `outputs/logs/*` 의 overlap 기록은 수정 전 동작의 증거로 그대로 보존한다.
+  수정 후 기대값은 `tests/test_simulator_characterization.py::TestKnownQuirkKI1`, `tests/test_safety_ki1.py`,
+  `tests/test_deadlock_monitor.py` 의 KI-1 분리 클래스들에 반영되어 있다.
 
 **KI-2 `timed_out` 의미.** `timed_out = (t >= max_steps)` 이므로 goal 도착이 정확히 `max_steps` 스텝일 때
 `all_at_goal=True` 와 `timed_out=True` 가 동시에 나온다. 성공 판정은 `all_at_goal` 로 한다.

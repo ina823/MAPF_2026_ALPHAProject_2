@@ -44,6 +44,14 @@ Trigger 이후 간단한 WAIT 규칙으로 정체가 해소되는지 확인한�
 - 이 기능은 충돌 예방이 아니라 발생 이후 중단이다.
 - Simulator KI-1 근본 수정은 별도 작업으로 남긴다.
 
+### KI-1 수정 후 (32e2158) 갱신
+- 위 3~5절은 **KI-1 수정 전** 기록이며 그대로 보존한다.
+- 수정 후 Bottleneck Safety-only v0: Trigger t=2, agent 0 이 t=3,4 WAIT, t=9 위치 중복 없음
+  (agent 1 은 (3,6) 에 머무르고 agent 3 의 이동도 연쇄 취소됨) → t=20 Timeout, integrity_abort=False.
+- 실제 시나리오로는 더 이상 위치 중복이 재현되지 않으므로, integrity_abort 경로는
+  `tests/test_safety_abort_logging.py::TestSafetyIntegrityAbortFaultInjection` 의 오류 주입 테스트로 검증한다.
+  run_il.py 의 무결성 검사 로직은 변경하지 않았다.
+
 ## 6. 테스트 결과
 - Safety-only 단위 테스트 8개 PASS
 - Monitor 연동 통합 테스트 2개 PASS
