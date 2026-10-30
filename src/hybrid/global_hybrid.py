@@ -22,10 +22,13 @@ H_exec (``GlobalHybridConfig.h_exec``), the IL-resume rule
 (``resume_policy``), the CBS recall rule (``recall_policy``) and SAFE_STOP's
 record contents (``safe_stop_handler``).
 
-``planner(current_positions, goals, grid) -> ReplanResult``: positional
-lists in ``sorted(agent_id)`` order, matching the CBS branch's
-replan_with_status() contract (paths indexed 0..n-1). The real
-replan_with_status() is not wired in v0; tests inject Mock planners.
+``planner(current_positions, goals, grid) -> ReplanResult``, keyed by the
+planner's ``paths_keying`` attribute:
+  * "index" (default, Mock planners): positional lists in
+    ``sorted(agent_id)`` order, paths indexed 0..n-1 (replan_with_status()).
+  * "agent_id" (src/hybrid/cbs_runtime_bridge.CbsRuntimePlanner):
+    {agent_id: pos} dicts in, paths keyed by agent_id out
+    (run_cbs_runtime()). The runner does not convert in either direction.
 """
 
 from __future__ import annotations
@@ -97,8 +100,10 @@ def run_global_hybrid_episode(
     """Run one Global Hybrid episode. starts/goals: {agent_id: (row, col)}.
 
     Returns run_il.run_episode()'s keys plus integrity_abort(_timestep),
-    termination, stop_reason, safe_stop, transitions, cbs_calls and
-    action_sources ("IL" / "CBS" per executed step).
+    termination, stop_reason, safe_stop, transitions, cbs_calls,
+    action_sources ("IL" / "CBS" per executed step), cbs_exec_trace (one
+    {t, k, expected, actual, match, overlap} per CBS step) and exec_mismatch
+    (the trace entry that caused EXEC_MISMATCH, else None).
     """
     if monitor is None:
         raise ValueError("Global Hybrid requires a DeadlockMonitor")
@@ -114,7 +119,10 @@ def run_global_hybrid_episode(
     action_sources = []
     transitions = []
     cbs_calls = []
+    cbs_exec_trace = []
+    exec_mismatch = None
     handled_triggers = set()
+    paths_keying = getattr(planner, "paths_keying", "index")
 
     info = {"t": 0, "all_at_goal": False, "timed_out": False}
     done = False
@@ -221,21 +229,31 @@ def run_global_hybrid_episode(
                 "status": None,
                 "accepted": False,
                 "reason": "",
+                "error": None,
                 "latency_ms": None,
             }
             cbs_calls.append(call)
             try:
-                result = planner(
-                    [s_t[aid] for aid in agent_order],
-                    [tuple(goals[aid]) for aid in agent_order],
-                    grid,
-                )
-            except Exception:
+                if paths_keying == "agent_id":
+                    result = planner(
+                        {aid: s_t[aid] for aid in agent_order},
+                        {aid: tuple(goals[aid]) for aid in agent_order},
+                        grid,
+                    )
+                else:
+                    result = planner(
+                        [s_t[aid] for aid in agent_order],
+                        [tuple(goals[aid]) for aid in agent_order],
+                        grid,
+                    )
+            except Exception as exc:
+                call["error"] = f"{type(exc).__name__}: {exc}"
                 call["reason"] = "PLANNER_EXCEPTION"
                 stop_reason = "PLANNER_EXCEPTION"
                 move_to(SAFE_STOP, stop_reason)
                 continue
             call["status"] = getattr(result, "status", None)
+            call["error"] = getattr(result, "error", None)
             latency_sec = getattr(result, "latency_sec", None)
             call["latency_ms"] = None if latency_sec is None else latency_sec * 1000.0
 
@@ -246,6 +264,7 @@ def run_global_hybrid_episode(
                 goals=goals,
                 grid=grid,
                 path_validator=path_validator,
+                paths_keying=paths_keying,
             )
             call["accepted"] = outcome.accepted
             call["reason"] = outcome.reason
@@ -265,12 +284,19 @@ def run_global_hybrid_episode(
             expected = plan.expected[exec_k]
             r, overlap = run_step(dict(plan.actions[exec_k]), "CBS")
             exec_k += 1
+            actual = {aid: tuple(sim._positions[aid]) for aid in sim._agent_ids}
+            entry = {
+                "t": info["t"], "k": exec_k,
+                "expected": dict(expected), "actual": actual,
+                "match": actual == expected, "overlap": overlap,
+            }
+            cbs_exec_trace.append(entry)
             if overlap:
                 integrity_abort = True
                 termination = INTEGRITY_ABORT
                 break
-            actual = {aid: tuple(sim._positions[aid]) for aid in sim._agent_ids}
             if actual != expected:
+                exec_mismatch = entry
                 stop_reason = "EXEC_MISMATCH"
                 move_to(SAFE_STOP, stop_reason)
                 continue
@@ -313,4 +339,6 @@ def run_global_hybrid_episode(
         "transitions": transitions,
         "cbs_calls": cbs_calls,
         "action_sources": action_sources,
+        "cbs_exec_trace": cbs_exec_trace,
+        "exec_mismatch": exec_mismatch,
     }

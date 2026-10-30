@@ -7,8 +7,9 @@
 
 numpy>=1.26        # verified with 2.5.3
 torch>=2.2         # verified with 2.14.0+cpu (a CPU build is sufficient)
+pyyaml>=6.0        # verified with 6.0.3; real CBS (src/cbs_adapter.py imports yaml at import time,
+                   # and the atb033 cbs.py subprocess runs with the same interpreter)
 
 # --- not needed by the baseline; enable when the step that uses them starts ---
-# pyyaml>=6.0      # CBS adapter (Alpha 1 src/cbs_adapter.py imports yaml at import time)
 # matplotlib>=3.8  # figures / videos
 # pytest>=8        # optional: the tests are plain unittest and also run under pytest

@@ -26,4 +26,5 @@ outputs/csv/*
 outputs/figures/*
 outputs/videos/*
 outputs/failure_analysis/*
+outputs/hybrid_e2e/*
 !outputs/*/.gitkeep

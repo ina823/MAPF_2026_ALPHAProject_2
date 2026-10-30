@@ -6,8 +6,11 @@ contract (docs/global_hybrid_runner_v0.md):
 
   1. status == "success" (the CBS branch's six-status contract; anything
      else, including an unknown string, is refused)
-  2. paths are indexed 0..n-1 in the planner's input order and map back
-     onto ``agent_order`` (index i -> agent_order[i])
+  2. paths_keying="index" (default): paths are indexed 0..n-1 in the
+     planner's input order and map back onto ``agent_order`` (index i ->
+     agent_order[i]). paths_keying="agent_id": paths are a mapping keyed by
+     exactly the ids in ``agent_order`` and are used as-is (no re-mapping --
+     the planner already converted, e.g. src/cbs_runtime_adapter.py)
   3. every path is non-empty and Path[0] == S_t for its agent
   4. every move of every path converts to a Simulator action via
      spec.delta_to_action() -- a non-adjacent move refuses the WHOLE plan,
@@ -35,6 +38,10 @@ Position = Tuple[int, int]
 
 # ReplanResult.status values (CBS branch, docs/cbs_path_guard_handoff.md).
 CBS_STATUSES = ("success", "timeout", "no_solution", "invalid_path", "input_error", "solver_error")
+
+# How ReplanResult.paths is keyed: "index" (replan_with_status, Mock
+# planners) or "agent_id" (run_cbs_runtime).
+PATHS_KEYINGS = ("index", "agent_id")
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,14 @@ def _paths_by_index(paths: Any, n: int) -> Tuple[Optional[List[Any]], str]:
     return None, "BOUNDARY_PATHS_TYPE"
 
 
+def _paths_by_agent_id(paths: Any, agent_order: Tuple[int, ...]) -> Tuple[Optional[List[Any]], str]:
+    if not isinstance(paths, Mapping):
+        return None, "BOUNDARY_PATHS_TYPE"
+    if set(paths.keys()) != set(agent_order):
+        return None, "BOUNDARY_PATH_COUNT"
+    return [paths[aid] for aid in agent_order], ""
+
+
 def _normalize_path(path: Any) -> Optional[List[Position]]:
     try:
         cells = []
@@ -105,12 +120,15 @@ def accept_replan_result(
     goals: Mapping[int, Position],
     grid: Any,
     path_validator: Callable,
+    paths_keying: str = "index",
 ) -> BoundaryOutcome:
     """Accept or refuse one ReplanResult(status, paths, latency_sec, error).
 
     ``current_positions`` must be S_t, the actual simulator positions at
     the Trigger. A refusal carries a reason code and never a plan.
     """
+    if paths_keying not in PATHS_KEYINGS:
+        raise ValueError(f"unknown paths_keying {paths_keying!r}")
     agent_order = tuple(agent_order)
 
     status = getattr(result, "status", None)
@@ -119,7 +137,11 @@ def accept_replan_result(
     if status != "success":
         return _reject(f"CBS_{status.upper()}")
 
-    raw_paths, reason = _paths_by_index(getattr(result, "paths", None), len(agent_order))
+    raw = getattr(result, "paths", None)
+    if paths_keying == "agent_id":
+        raw_paths, reason = _paths_by_agent_id(raw, agent_order)
+    else:
+        raw_paths, reason = _paths_by_index(raw, len(agent_order))
     if raw_paths is None:
         return _reject(reason)
 
