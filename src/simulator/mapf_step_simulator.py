@@ -244,45 +244,79 @@ class MAPFStepSimulator(MAPFSimulator):
                 intended[agent_id] = (new_row, new_col)
         intended_after_wall = dict(intended)  # logging-only snapshot
 
-        # 2) vertex collision: 같은 칸으로 몰리는 에이전트들은 전부 제자리로 되돌림
+                # 2) 충돌 해결: 취소 후 새 충돌이 없는지 반복 검사
         from collections import Counter
 
-        landing_counts = Counter(intended.values())
-        for agent_id in self._agent_ids:
-            if landing_counts[intended[agent_id]] > 1:
-                intended[agent_id] = self._positions[agent_id]
-        intended_after_vertex = dict(intended)  # logging-only snapshot
-        # Logging-only: one vertex-conflict EVENT per contested cell (not per
-        # agent bounced off it) -- landing_counts already groups agents by the
-        # cell they targeted, so counting cells with count > 1 is exact.
-        vertex_conflict_count = sum(1 for count in landing_counts.values() if count > 1)
+        vertex_blocked = set()
+        edge_blocked = set()
+        vertex_conflict_count = 0
+        edge_conflict_count = 0
 
-        # 3) edge collision: 서로 자리를 바꾸는 쌍도 전부 제자리로 되돌림
-        edge_conflict_count = 0  # logging-only: one event per swapping pair
-        for i, agent_a in enumerate(self._agent_ids):
-            for agent_b in self._agent_ids[i + 1:]:
-                a_curr, b_curr = self._positions[agent_a], self._positions[agent_b]
-                a_next, b_next = intended[agent_a], intended[agent_b]
-                if a_next == b_curr and b_next == a_curr and a_curr != a_next:
-                    intended[agent_a] = a_curr
-                    intended[agent_b] = b_curr
-                    edge_conflict_count += 1
+        # 취소된 로봇은 이번 step에서 다시 움직이지 않는다.
+        # 한 번 이상 취소가 발생하면 다시 검사한다.
+        for _ in range(len(self._agent_ids) + 1):
+            before_resolution = dict(intended)
 
-        # Logging-only instrumentation: classify why each agent's final position
-        # differs from what it proposed, using the three snapshots above in the
-        # same wall -> vertex -> edge priority as the resolution passes just run.
-        # This only reads already-computed values; it does not change `intended`.
+            # (A) Vertex 충돌 검사
+            landing_counts = Counter(intended.values())
+            contested = {
+                cell
+                for cell, count in landing_counts.items()
+                if count > 1
+            }
+            vertex_conflict_count += len(contested)
+
+            for aid in self._agent_ids:
+                if (
+                    intended[aid] in contested
+                    and intended[aid] != self._positions[aid]
+                ):
+                    intended[aid] = self._positions[aid]
+                    vertex_blocked.add(aid)
+
+            # (B) Edge swap 충돌 검사
+            swap_pairs = []
+            for i, agent_a in enumerate(self._agent_ids):
+                for agent_b in self._agent_ids[i + 1:]:
+                    a_curr = self._positions[agent_a]
+                    b_curr = self._positions[agent_b]
+                    a_next = intended[agent_a]
+                    b_next = intended[agent_b]
+
+                    if (
+                        a_next == b_curr
+                        and b_next == a_curr
+                        and a_next != a_curr
+                    ):
+                        swap_pairs.append((agent_a, agent_b))
+
+            for agent_a, agent_b in swap_pairs:
+                intended[agent_a] = self._positions[agent_a]
+                intended[agent_b] = self._positions[agent_b]
+                edge_blocked.update((agent_a, agent_b))
+
+            edge_conflict_count += len(swap_pairs)
+
+            # (C) 더 이상 취소되는 이동이 없으면 종료
+            if intended == before_resolution:
+                break
+        else:
+            raise RuntimeError(
+                "Collision resolution did not converge"
+            )
+
+        # 3) 이동 취소 이유 기록
         conflict_types = {}
-        for agent_id in self._agent_ids:
-            origin = self._positions[agent_id]
-            if wall_hit[agent_id]:
-                conflict_types[agent_id] = "wall"
-            elif intended_after_wall[agent_id] != origin and intended_after_vertex[agent_id] == origin:
-                conflict_types[agent_id] = "vertex"
-            elif intended_after_vertex[agent_id] != origin and intended[agent_id] == origin:
-                conflict_types[agent_id] = "edge"
+        for aid in self._agent_ids:
+            if wall_hit[aid]:
+                conflict_types[aid] = "wall"
+            elif aid in vertex_blocked:
+                conflict_types[aid] = "vertex"
+            elif aid in edge_blocked:
+                conflict_types[aid] = "edge"
             else:
-                conflict_types[agent_id] = "none"
+                conflict_types[aid] = "none"
+
         self._last_conflict_types = conflict_types
         self._last_vertex_conflict_count = vertex_conflict_count
         self._last_edge_conflict_count = edge_conflict_count
