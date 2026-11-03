@@ -115,3 +115,46 @@ DEV_ONLY 정책은 `scripts/run_corridor_hybrid_e2e.py` 안에만 있고, `src/`
 - **CSV**: steps CSV 스키마는 변경하지 않았다. CBS status·latency 전용 열이나 IL/CBS step 구분 열이 없고(`cbs_latency_ms`는 비어 있음), Monitor가 Trigger 이후에도 `TRIGGER_FULL_REPEAT`를 계속 보고한다. CBS 구간은 `result.json`의 `cbs_calls`, `action_sources`, `cbs_exec_trace`로 확인한다.
 - **Solver 의존 테스트**: `tests/test_corridor_hybrid_e2e.py`의 위치 불일치·중복 Trigger 테스트는 실제 Solver(`ALPHA2_CBS_SOLVER_ROOT` 또는 `../MAPF_ALPHA2_CBS_CHECK` 복제본)가 없으면 skip된다.
 - Path Guard는 어댑터 내부 2회 + Boundary 1회, 총 3회 실행된다 (의도한 중복).
+
+## 7. 세 시나리오 DEV 회귀 (2026-11-03, 실제 NavHint IL + 실제 CBS, `256f54e` 기준)
+
+### 7.1 전체 경로 실행 (`scripts/run_corridor_hybrid_e2e.py --scenario ...`, 코드 변경 없음)
+| 항목 | Corridor | Intersection | Bottleneck |
+|---|---|---|---|
+| 최초 Trigger (KI-1 수정 후 재측정) | t=5 | t=2 | t=2 |
+| S_t | `{0:(2,4),1:(2,6)}` | `{0:(3,2),1:(2,3)}` | `{0:(1,2),1:(2,1),2:(1,7),3:(3,7)}` |
+| CBS / latency | success / 290 ms | success / 321 ms | success / 3,574 ms |
+| CBS 실행 step (= 경로 길이) | 8 | 4 | 13 |
+| expected=actual, overlap | 전 step 일치, 0 | 전 step 일치, 0 | 전 step 일치, 0 |
+| 종료 | SUCCESS (13 step) | SUCCESS (6 step) | SUCCESS (15 step) |
+
+### 7.2 DEV_ONLY H_exec=3 + IL 복귀 (`scripts/run_hybrid_resume_dev.py`)
+DEV_ONLY 정책(합의된 정책 아님): H_exec=3, CBS 창 종료 후 항상 IL 복귀(`DevResumeIL`), CBS 호출 에피소드당 최대 1회.
+"IL_RESUME 도달"(`CBS_EXEC → IL_RESUME` 전이)과 "실제 IL 재실행"(복귀 후 `policy.act()`·`sim.step()` 호출 수)을 따로 기록한다.
+
+| 항목 | Corridor | Intersection | Bottleneck |
+|---|---|---|---|
+| Trigger / S_t | t=5, 7.1과 동일 | t=2, 7.1과 동일 | t=2, 7.1과 동일 |
+| CBS / latency | success / 290 ms | success / 277 ms | success / 2,800 ms |
+| CBS 실행 (창 / 경로 길이) | 3 / 8 | 3 / 4 | 3 / 13 |
+| expected=actual, overlap | 3/3 일치, 0 | 3/3 일치, 0 | 3/3 일치, 0 |
+| IL_RESUME 도달 | t=8 | t=5 | t=5 |
+| 복귀 후 IL step (act / sim.step) | 5 (5 / 5), 첫 t=9 | 1 (1 / 1), 첫 t=6 | 155 (155 / 155), 첫 t=6 |
+| 복귀 후 재정체 | 없음 | 없음 | **t=7 (first_seen=6, period 1)** |
+| Monitor 재Trigger | 없음 | 없음 | 없음 (첫 Trigger에서 고정) |
+| 종료 | **SUCCESS** (13 step) | **SUCCESS** (6 step) | **TIMEOUT** (160 step, all_at_goal=False) |
+| 판정 | PASS (14/14) | PASS (14/14) | **FAIL** (`all_at_goal`) |
+
+**Bottleneck IL 복귀 실패 원인**: CBS 경로는 agent 2가 (0,5)에서 비켜 대기하는 동안(k=3~4) agent 0·1이
+문을 지나 동쪽으로 빠지는 대기·우회 경로였다. H_exec=3에서 이 경로가 끝나기 전(k=3, t=5)에 IL로 복귀했고,
+IL은 t=6에 agent 2를 (1,5)로 다시 내려 계획(k=4: (0,5) 대기)과 달라졌다. 그 결과 복귀 직후(t=6) 네 agent가 문 동쪽 칸 (2,5) 주변에 모인다
+(0:(2,5), 1:(2,4) 문, 2:(1,5), 3:(3,5)). t=7부터 agent 1·2·3은 (2,5)로, agent 0은 (1,5)로 가려 하고
+모든 목표 칸이 점유되어 전원 vertex WAIT → 같은 상태가 160 step까지 반복된다. Monitor는 첫 Trigger(t=2)
+이후 고정되어 이 재정체를 Trigger하지 않으며, DEV 재호출 제한(1회)도 있어 CBS가 다시 불리지 않는다.
+즉 H_exec=3은 Bottleneck에서 IL이 혼자 통과할 수 있는 상태까지 데려가지 못했다.
+
+### 7.3 이 실험에서 드러난 합의 필요 항목 / 한계
+- **Monitor 재무장**: 현재 Monitor는 에피소드당 한 번만 Trigger한다. IL 복귀 후 재정체는 사후 분석(`find_repeat_after`)으로만 확인된다. 재호출 정책을 허용해도 재Trigger가 없으므로 실제 호출은 1회뿐이다.
+- **H_exec**: 경로 전체 실행은 세 시나리오 모두 SUCCESS, H_exec=3은 Bottleneck에서 실패. H_exec와 복귀 조건(예: 병목 통과 여부) 결정이 필요하다.
+- **CBS 경로 차이**: 동일한 Bottleneck S_t에서 7.1과 7.2의 CBS 결과로 서로 다른 유효 경로가 관찰됐다(Path[1]의 agent 3: (3,6) vs (4,7), 둘 다 Path Guard 통과). 원인은 미확인이다.
+- 각 결과는 1회 실행이다. 세 시나리오의 Agent ID는 0..n-1이라 ID/인덱스 혼동은 실제 실행으로 구별되지 않으며, 단위 테스트(`test_cbs_runtime_bridge.py`, id 3·7)로만 검증된다.
