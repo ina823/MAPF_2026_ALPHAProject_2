@@ -132,6 +132,7 @@ class EpisodeRecord:
     overlap_checked_at_runtime: bool
     integrity_unhandled: bool
     cbs_calls: List[Dict[str, Any]]
+    planner_calls: List[Dict[str, Any]]      # CbsRuntimePlanner.calls copy (paths, work_dir, solver_root)
     cbs_exec_trace: List[Dict[str, Any]]
     transitions: List[Dict[str, Any]]
     safety_holds: List[Tuple[int, int]]      # (t, agent_id) steps Safety-only forced WAIT
@@ -225,6 +226,24 @@ def _jsonable(obj):
     return obj
 
 
+def _planner_calls(planner):
+    """Record-only copy of CbsRuntimePlanner.calls (the paths the solver returned)."""
+    if planner is None:
+        return []
+    calls = []
+    for c in planner.calls:
+        paths = c.get("paths")
+        calls.append({
+            "solver_root": str(c["solver_root"]),
+            "work_dir": str(c["work_dir"]),
+            "timeout_sec": c["timeout_sec"],
+            "status": c.get("status"),
+            "paths": ({aid: [tuple(p) for p in path] for aid, path in paths.items()}
+                      if paths is not None else None),
+        })
+    return calls
+
+
 def _check_spec(spec):
     if spec.method in NOT_IMPLEMENTED:
         raise NotImplementedError(f"{spec.method} is not implemented")
@@ -272,6 +291,7 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
                                  timeout_sec=spec.cbs_timeout_sec)
 
     safety = None
+    planner = cbs_planner() if spec.method in CBS_METHODS else None
     if spec.method == IL_ONLY:
         raw = run_episode(il_policy(), grid, starts, goals, spec.max_steps, logger=logger, monitor=monitor)
     elif spec.method == SAFETY_ONLY_DEV_K2:
@@ -279,13 +299,13 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
         raw = run_episode(il_policy(), grid, starts, goals, spec.max_steps,
                           logger=logger, monitor=monitor, safety=safety)
     elif spec.method == PURE_CBS_DEV_SINGLE_PLAN:
-        raw = run_pure_cbs_episode(grid, starts, goals, spec.max_steps, planner=cbs_planner(),
+        raw = run_pure_cbs_episode(grid, starts, goals, spec.max_steps, planner=planner,
                                    path_validator=PathGuardValidator(), monitor=monitor, logger=logger)
     else:
         config = (dev_config(spec.max_steps) if spec.method == GLOBAL_HYBRID_DEV_FULL
                   else dev_resume_config(H_EXEC_DEV))
         raw = run_global_hybrid_episode(il_policy(), grid, starts, goals, spec.max_steps,
-                                        planner=cbs_planner(), path_validator=PathGuardValidator(),
+                                        planner=planner, path_validator=PathGuardValidator(),
                                         config=config, monitor=monitor, logger=logger)
 
     if "termination" in raw:
@@ -340,6 +360,7 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
         overlap_checked_at_runtime=checked,
         integrity_unhandled=(not checked) and first_overlap is not None,
         cbs_calls=list(raw.get("cbs_calls", [])),
+        planner_calls=_planner_calls(planner),
         cbs_exec_trace=list(raw.get("cbs_exec_trace", [])),
         transitions=list(raw.get("transitions", [])),
         safety_holds=list(safety.holds) if safety is not None else [],

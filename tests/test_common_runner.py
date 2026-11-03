@@ -210,6 +210,21 @@ class TestMethodsDoNotMix(_Case):
         self.assertEqual(records[SAFETY_ONLY_DEV_K2].termination, "TIMEOUT")
         self.assertEqual(records[IL_ONLY].safety_holds, [])
 
+    def test_planner_calls_recorded_for_cbs_methods_only(self):
+        expected = {PURE_CBS_DEV_SINGLE_PLAN: PURE_PLAN, GLOBAL_HYBRID_DEV_FULL: GLOBAL_PLAN,
+                    GLOBAL_HYBRID_DEV_H3: GLOBAL_PLAN}
+        for method in METHODS:
+            with self.subTest(method):
+                r = self.run_recorded(method)
+                if method not in CBS_METHODS:
+                    self.assertEqual(r.planner_calls, [])
+                    continue
+                (call,) = r.planner_calls
+                self.assertEqual(call["paths"], expected[method])   # solver index order == agent ids 0, 1
+                self.assertEqual(call["solver_root"], str(self.solver_root.resolve()))
+                self.assertEqual(call["timeout_sec"], 30)
+                self.assertTrue(call["work_dir"].startswith(r.run_dir))
+
     def test_existing_run_dir_is_refused(self):
         with patch("src.common.episode_logger.make_run_id", return_value="fixed_run"):
             first = run_method(self.spec(IL_ONLY, max_steps=3))
