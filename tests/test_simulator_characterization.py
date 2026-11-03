@@ -1,13 +1,10 @@
-"""Characterization tests for MAPFStepSimulator (Alpha 1 origin/feature/simulator, c323d7d5).
+"""Characterization tests for MAPFStepSimulator.
 
-These tests pin down what the simulator does TODAY so that the Alpha 1 baseline
-migration cannot silently change it. They describe behaviour, they do not
-endorse it. Two tests document a known Alpha 1 quirk (KI-1) on purpose:
-their assertions describe the CURRENT (unfixed) behaviour. When the simulator
-is deliberately improved in a later Alpha 2 step, update those two tests in the
-same change. See docs/alpha1_baseline.md.
+Alpha 1의 기존 동작을 기록하고,
+Alpha 2에서 수정한 KI-1 연쇄 충돌 방지 동작도 검증한다.
 
-numpy only (torch is not needed).
+KI-1 수정 후에는 충돌 처리 과정에서 이동이 취소되더라도
+최종 위치에 Vertex Conflict가 발생하면 안 된다.
 """
 
 import unittest
@@ -126,21 +123,19 @@ class TestObservation(unittest.TestCase):
 
 
 class TestKnownQuirkKI1(unittest.TestCase):
-    """KI-1: vertex-collision resolution is a single pass, not iterated.
-
-    Agents that are bounced back to their previous cell are not re-checked
-    against agents that were moving INTO that previous cell, so two agents can
-    end up in the same cell. Alpha 1 behaviour, preserved on purpose in the
-    baseline migration; to be fixed later in the Alpha 2 simulator step.
-    """
+    """KI-1 수정 검증: 충돌 취소 후 연쇄 충돌이 발생하지 않아야 한다."""
 
     def test_cascade_overlap_1d(self):
         # A(col1)->col2 and C(col3)->col2 collide and both bounce back;
         # B(col0)->col1 enters A's old cell -> A and B share col1.
         sim = make_sim(CORRIDOR, {0: (0, 1), 1: (0, 0), 2: (0, 3)}, {0: (0, 4), 1: (0, 4), 2: (0, 0)})
         sim.step({0: RIGHT, 1: RIGHT, 2: LEFT})
-        self.assertEqual(sim._positions, {0: (0, 1), 1: (0, 1), 2: (0, 3)})
-        self.assertEqual(len(set(sim._positions.values())), 2)   # 3 agents, 2 distinct cells (current behaviour)
+        self.assertEqual(sim._positions, {
+            0: (0, 1),
+            1: (0, 0),
+            2: (0, 3),
+        })
+        self.assertEqual(len(set(sim._positions.values())), 3)
 
     def test_swap_broken_by_third_agent_vertex_bounce_2d(self):
         # Pattern seen in the Alpha 1 rollout of maze_s11_n3 (t=23):
@@ -150,8 +145,12 @@ class TestKnownQuirkKI1(unittest.TestCase):
         sim = make_sim(np.zeros((11, 11), dtype=int),
                        {0: (9, 2), 1: (8, 3), 2: (8, 2)}, {0: (0, 0), 1: (0, 1), 2: (0, 2)})
         sim.step({0: UP, 1: LEFT, 2: DOWN})
-        self.assertEqual(sim._positions, {0: (9, 2), 1: (8, 3), 2: (9, 2)})
-        self.assertEqual(len(set(sim._positions.values())), 2)
+        self.assertEqual(sim._positions, {
+            0: (9, 2),
+            1: (8, 3),
+            2: (8, 2),
+        })
+        self.assertEqual(len(set(sim._positions.values())), 3)
 
 
 if __name__ == "__main__":

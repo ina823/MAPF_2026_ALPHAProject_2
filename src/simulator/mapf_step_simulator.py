@@ -225,22 +225,48 @@ class MAPFStepSimulator(MAPFSimulator):
             else:
                 intended[agent_id] = (new_row, new_col)
 
-        # 2) vertex collision: 같은 칸으로 몰리는 에이전트들은 전부 제자리로 되돌림
+        # 2) Vertex / Edge Conflict를 반복 검사하여 연쇄 충돌 방지
         from collections import Counter
 
-        landing_counts = Counter(intended.values())
-        for agent_id in self._agent_ids:
-            if landing_counts[intended[agent_id]] > 1:
-                intended[agent_id] = self._positions[agent_id]
+        while True:
+            to_cancel = set()
 
-        # 3) edge collision: 서로 자리를 바꾸는 쌍도 전부 제자리로 되돌림
-        for i, agent_a in enumerate(self._agent_ids):
-            for agent_b in self._agent_ids[i + 1:]:
-                a_curr, b_curr = self._positions[agent_a], self._positions[agent_b]
-                a_next, b_next = intended[agent_a], intended[agent_b]
-                if a_next == b_curr and b_next == a_curr and a_curr != a_next:
-                    intended[agent_a] = a_curr
-                    intended[agent_b] = b_curr
+            # Vertex Conflict: 같은 칸으로 이동하려는 로봇 탐지
+            landing_counts = Counter(intended.values())
+            for agent_id in self._agent_ids:
+                if landing_counts[intended[agent_id]] > 1:
+                    to_cancel.add(agent_id)
+
+            # Edge Conflict: 서로 자리를 교환하려는 로봇 탐지
+            for i, agent_a in enumerate(self._agent_ids):
+                for agent_b in self._agent_ids[i + 1:]:
+                    a_curr = self._positions[agent_a]
+                    b_curr = self._positions[agent_b]
+                    a_next = intended[agent_a]
+                    b_next = intended[agent_b]
+
+                    if (
+                        a_next == b_curr
+                        and b_next == a_curr
+                        and a_next != a_curr
+                    ):
+                        to_cancel.update((agent_a, agent_b))
+
+            # 더 이상 충돌이 없다면 이동 확정 가능
+            if not to_cancel:
+                break
+
+            # 충돌한 로봇의 이동을 취소
+            changed = False
+            for agent_id in to_cancel:
+                if intended[agent_id] != self._positions[agent_id]:
+                    intended[agent_id] = self._positions[agent_id]
+                    changed = True
+
+            # 원래 위치 자체가 중복되는 등 해결 불가능한 상태
+            if not changed:
+                raise RuntimeError("Unresolvable collision in simulator state")
+
 
         self._positions = intended
         self._t += 1
