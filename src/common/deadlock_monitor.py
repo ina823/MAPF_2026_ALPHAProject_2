@@ -101,6 +101,18 @@ vocabulary this implements a slice of):
     that agent's streak ends) -- every other agent's streak is computed
     normally and is never reset just because a different agent's data was
     unusable.
+  * (Rearm, DEV step 1) `rearm(current_positions, current_timestep)`
+    restarts ONLY the Full-repeat Trigger detector mid-episode, e.g. when a
+    Hybrid runner hands control back to IL after a CBS window. Unlike
+    `reset()` it keeps the global timestep (the current state is registered
+    at `current_timestep`, never at 0), archives the previous Trigger in
+    `trigger_history`, and leaves every episode-cumulative record untouched
+    (overlap_timesteps / overlap_integrity_status, persistent_conflict and
+    no_progress streaks and incomplete counters). It forgets `_seen` and
+    `_conflict_log`, so no state observed before the rearm can become a
+    new Trigger's `first_seen`. Never called by default -- a caller that
+    does not call it gets exactly the original latch-on-first-repeat
+    behaviour. Who calls it, when, and how often is NOT decided here.
   * Does not implement: Trigger-Partial, K_label continuation, CBS
     recovery, or Hybrid runner integration (see `DeadlockMonitorConfig`).
 
@@ -237,6 +249,33 @@ class DeadlockMonitorResult:
     current_no_progress_streaks: Tuple[Tuple[int, int], ...] = field(default_factory=tuple)
 
 
+# DeadlockMonitorResult fields owned by the Full-repeat Trigger detector --
+# the only ones rearm() puts back to their defaults.
+_TRIGGER_FIELDS: Tuple[str, ...] = (
+    "trigger_type", "trigger_reason_code", "trigger_timestep",
+    "first_seen", "period", "blocking_type", "blocking_agents",
+)
+
+
+@dataclass(frozen=True)
+class TriggerRecord:
+    """One archived Trigger, written by `DeadlockMonitor.rearm()`.
+
+    `armed_since` is the timestep the detector that produced this Trigger
+    was armed at (0 for the `reset()` arming); `rearmed_at` is the
+    timestep of the `rearm()` call that archived it."""
+
+    trigger_type: str
+    trigger_reason_code: str
+    trigger_timestep: int
+    first_seen: int
+    period: int
+    blocking_type: str
+    blocking_agents: Tuple[int, ...]
+    armed_since: int
+    rearmed_at: int
+
+
 class DeadlockMonitor:
     """Observes a rollout step by step. Never alters actions or stops it.
 
@@ -268,6 +307,15 @@ class DeadlockMonitor:
         # insufficient data -- is dropped; this never touches any other
         # agent's entry).
         self._no_progress_streaks: Dict[int, int] = {}
+        # Rearm bookkeeping. _last_t/_last_state: the most recent timestep
+        # and (normalised) joint state registered by reset() or observed by
+        # observe_step() -- rearm() may only re-register exactly that.
+        self._agent_ids: Tuple[int, ...] | None = None
+        self._last_t: int | None = None
+        self._last_state: JointState | None = None
+        self._armed_since: int | None = None
+        self._rearm_count = 0
+        self._trigger_history: list[TriggerRecord] = []
 
     @staticmethod
     def _joint_state(positions: Dict[int, Position]) -> JointState:
@@ -276,6 +324,12 @@ class DeadlockMonitor:
         order always produce the same joint state (docs/deadlock_definition_v1.md
         Section 3.3: "full joint state ... every agent")."""
         return tuple(positions[aid] for aid in sorted(positions))
+
+    @staticmethod
+    def _normalized_joint_state(positions: Dict[int, Position]) -> JointState:
+        """`_joint_state` with every position coerced to a tuple, so a list
+        position (e.g. read back from JSON) compares equal to a tuple one."""
+        return tuple(tuple(positions[aid]) for aid in sorted(positions))
 
     def reset(self, initial_positions: Dict[int, Position], goals: Dict[int, Position]) -> None:
         """Register S_0 at t=0, before the first `step()` call.
@@ -296,6 +350,83 @@ class DeadlockMonitor:
         s0 = self._joint_state(initial_positions)
         if s0 != self._goal_state:
             self._seen[s0] = 0
+        self._agent_ids = tuple(sorted(goals))
+        self._last_t = 0
+        self._last_state = self._normalized_joint_state(initial_positions)
+        self._armed_since = 0
+        self._rearm_count = 0
+        self._trigger_history = []
+
+    def rearm(self, current_positions: Dict[int, Position], current_timestep: int) -> None:
+        """Restart the Full-repeat Trigger detector at the current global
+        timestep, without restarting the episode.
+
+        `current_positions` must be the joint state last observed (by
+        `observe_step()`, or by `reset()` if no step has been observed yet)
+        and `current_timestep` that observation's timestep -- i.e. call
+        this between two steps, after the most recent `observe_step()`.
+        Anything else raises before any state is changed:
+          * RuntimeError -- called before `reset()`;
+          * TypeError    -- timestep not an int (bool rejected);
+          * ValueError   -- timestep is not the last observed one (backwards,
+            or ahead of what was observed), agent ids differ from
+            `reset()`'s goals, or positions differ from the last observed
+            joint state.
+
+        Effect:
+          * a Trigger already reported by the current detector is archived
+            as a `TriggerRecord` in `trigger_history`;
+          * `_seen` and `_conflict_log` are cleared and the Trigger fields
+            (`_TRIGGER_FIELDS`) go back to their defaults, so the next
+            `observe_step()` reports TRIGGER_NONE unless a new repeat
+            occurs, and a new Trigger's `first_seen` is always
+            `>= current_timestep`;
+          * the current joint state is registered at `current_timestep`
+            (global, never 0) -- unless it is the goal state, which is
+            never registered (same rule as `reset()`/`observe_step()`);
+          * overlap_timesteps / overlap_integrity_status and all
+            persistent_conflict / no_progress streaks and counters are
+            kept exactly as they were.
+        After a rearm, `observe_step()` rejects a timestep that is not
+        strictly greater than the last observed one.
+        """
+        if self._goal_state is None or self._last_t is None:
+            raise RuntimeError("DeadlockMonitor.rearm() called before reset()")
+        if isinstance(current_timestep, bool) or not isinstance(current_timestep, int):
+            raise TypeError(f"current_timestep must be an int, got {current_timestep!r}")
+        if current_timestep != self._last_t:
+            raise ValueError(
+                f"rearm timestep {current_timestep} != last observed timestep {self._last_t}")
+        if tuple(sorted(current_positions)) != self._agent_ids:
+            raise ValueError(
+                f"rearm agent ids {tuple(sorted(current_positions))} != {self._agent_ids}")
+        state = self._normalized_joint_state(current_positions)
+        if state != self._last_state:
+            raise ValueError(
+                f"rearm positions differ from the joint state observed at t={self._last_t}")
+
+        r = self._result
+        if r.trigger_type == "FULL":
+            self._trigger_history.append(TriggerRecord(
+                trigger_type=r.trigger_type,
+                trigger_reason_code=r.trigger_reason_code,
+                trigger_timestep=r.trigger_timestep,
+                first_seen=r.first_seen,
+                period=r.period,
+                blocking_type=r.blocking_type,
+                blocking_agents=tuple(r.blocking_agents),
+                armed_since=self._armed_since,
+                rearmed_at=current_timestep,
+            ))
+        defaults = DeadlockMonitorResult()
+        for name in _TRIGGER_FIELDS:
+            setattr(r, name, getattr(defaults, name))
+        self._seen = {}
+        self._conflict_log = {}
+        if state != tuple(tuple(p) for p in self._goal_state):
+            self._seen[state] = current_timestep
+        self._armed_since = current_timestep
+        self._rearm_count += 1
 
     def observe_step(
         self,
@@ -334,8 +465,17 @@ class DeadlockMonitor:
         values `scripts/run_il.py::_log_step` computes from `policy._dist`.
         Independent of `current_positions`/`intended_positions` above;
         each agent is evaluated on its own data only (see
-        `_update_no_progress`)."""
+        `_update_no_progress`).
+
+        Only after a `rearm()`: a `timestep` not strictly greater than the
+        last observed one raises ValueError (before anything is recorded).
+        Without a rearm this method's behaviour is unchanged."""
+        if self._rearm_count and timestep <= self._last_t:
+            raise ValueError(
+                f"observe_step timestep {timestep} <= last observed {self._last_t} after rearm()")
         state = self._joint_state(positions)
+        self._last_t = timestep
+        self._last_state = self._normalized_joint_state(positions)
         self._conflict_log[timestep] = dict(conflict_types)
 
         # Integrity (position overlap) is tracked unconditionally, in
@@ -640,3 +780,18 @@ class DeadlockMonitor:
     @property
     def result(self) -> DeadlockMonitorResult:
         return self._snapshot()
+
+    @property
+    def trigger_history(self) -> Tuple[TriggerRecord, ...]:
+        """Triggers archived by `rearm()`, oldest first. The live detector's
+        current Trigger (if any) is in `result`, not here."""
+        return tuple(self._trigger_history)
+
+    @property
+    def rearm_count(self) -> int:
+        return self._rearm_count
+
+    @property
+    def armed_since(self) -> int | None:
+        """Timestep the live detector was armed at (0 after `reset()`)."""
+        return self._armed_since
