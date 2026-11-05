@@ -1,0 +1,91 @@
+{
+  "families": {
+    "fbot01": {
+      "count": 5,
+      "members": [
+        "DEV_fbot01_001",
+        "DEV_fbot01_002",
+        "DEV_fbot01_003",
+        "DEV_fbot01_004",
+        "DEV_fbot01_005"
+      ],
+      "splits": {
+        "DEV": 5
+      },
+      "structure_types": [
+        "bottleneck"
+      ]
+    },
+    "fcorr01": {
+      "count": 5,
+      "members": [
+        "DEV_fcorr01_001",
+        "DEV_fcorr01_002",
+        "DEV_fcorr01_003",
+        "DEV_fcorr01_004",
+        "DEV_fcorr01_005"
+      ],
+      "splits": {
+        "DEV": 5
+      },
+      "structure_types": [
+        "corridor"
+      ]
+    },
+    "fcyc01": {
+      "count": 1,
+      "members": [
+        "DEV_fcyc01_001"
+      ],
+      "splits": {
+        "DEV": 1
+      },
+      "structure_types": [
+        "cycle_ring"
+      ]
+    },
+    "femp01": {
+      "count": 1,
+      "members": [
+        "DEV_femp01_001"
+      ],
+      "splits": {
+        "DEV": 1
+      },
+      "structure_types": [
+        "empty"
+      ]
+    },
+    "fint01": {
+      "count": 4,
+      "members": [
+        "DEV_fint01_001",
+        "DEV_fint01_002",
+        "DEV_fint01_003",
+        "DEV_fint01_004"
+      ],
+      "splits": {
+        "DEV": 4
+      },
+      "structure_types": [
+        "intersection"
+      ]
+    }
+  },
+  "family_count": 5,
+  "fp_schema": 1,
+  "instance_count": 16,
+  "instances_sha256": "0750f44ad4e6feb62571bc22dbb5f66ee7db2a9af813fe4ff162af7f89ee6e4c",
+  "relation_counts": {
+    "SAME_MAP": 26
+  },
+  "review_items": [],
+  "split_counts": {
+    "DEV": 16
+  },
+  "thresholds": {
+    "NEAR_MAP_MAX_DIFF": 2,
+    "SUBMAP_MIN_AREA": 9
+  },
+  "unresolved_review_count": 0
+}
