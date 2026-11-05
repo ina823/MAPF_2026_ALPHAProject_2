@@ -8,6 +8,9 @@ calling the existing runner for that method, unchanged:
     PURE_CBS_DEV_SINGLE_PLAN  src/compare/pure_cbs.run_pure_cbs_episode
     GLOBAL_HYBRID_DEV_FULL    run_global_hybrid_episode + dev_config(max_steps)
     GLOBAL_HYBRID_DEV_H3      run_global_hybrid_episode + dev_resume_config(3)
+    GLOBAL_HYBRID_DEV_H3_REARM  run_global_hybrid_episode + dev_rearm_config(3)
+                              (opt-in only: not in METHODS, so not in the
+                              default batch; Monitor rearm + bounded recall)
 
 Every method gets the same scenario loader ((row, col), agent id = list
 index, t = 0 initial state), the same checkpoint, max_steps (default 160),
@@ -53,9 +56,14 @@ SAFETY_ONLY_DEV_K2 = "SAFETY_ONLY_DEV_K2"
 PURE_CBS_DEV_SINGLE_PLAN = "PURE_CBS_DEV_SINGLE_PLAN"
 GLOBAL_HYBRID_DEV_FULL = "GLOBAL_HYBRID_DEV_FULL"
 GLOBAL_HYBRID_DEV_H3 = "GLOBAL_HYBRID_DEV_H3"
+GLOBAL_HYBRID_DEV_H3_REARM = "GLOBAL_HYBRID_DEV_H3_REARM"
 METHODS = (IL_ONLY, SAFETY_ONLY_DEV_K2, PURE_CBS_DEV_SINGLE_PLAN, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3)
-CBS_METHODS = (PURE_CBS_DEV_SINGLE_PLAN, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3)
-IL_METHODS = (IL_ONLY, SAFETY_ONLY_DEV_K2, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3)
+OPT_IN_METHODS = (GLOBAL_HYBRID_DEV_H3_REARM,)   # run only when named explicitly
+ALL_METHODS = METHODS + OPT_IN_METHODS
+CBS_METHODS = (PURE_CBS_DEV_SINGLE_PLAN, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3,
+               GLOBAL_HYBRID_DEV_H3_REARM)
+IL_METHODS = (IL_ONLY, SAFETY_ONLY_DEV_K2, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3,
+              GLOBAL_HYBRID_DEV_H3_REARM)
 NOT_IMPLEMENTED = ("SELECTIVE_HYBRID", "SELECTIVE_WFG", "WFG")
 
 DEFAULT_MAX_STEPS = 160
@@ -86,6 +94,15 @@ DEV_SETTINGS = {
         "h_exec": H_EXEC_DEV,
         "resume": "always IL after the CBS window",
         "recall": "first Trigger only; the Monitor latches its first Trigger",
+        "status": NOT_AGREED,
+    },
+    GLOBAL_HYBRID_DEV_H3_REARM: {
+        "h_exec": H_EXEC_DEV,
+        "resume": "always IL after the CBS window; Monitor rearmed at each IL_RESUME -> IL",
+        "recall": "DEV_ONLY candidate limits (MonitorRearmConfig)",
+        "rearm_limits": "filled per run from dev_rearm_config (max_cbs_calls includes the first call)",
+        "on_refusal": "SAFE_STOP: RECALL_LIMIT_EXCEEDED / CBS_TIME_BUDGET_EXCEEDED / "
+                      "RECALL_COOLDOWN_ACTIVE / RECALL_SAME_STATE",
         "status": NOT_AGREED,
     },
 }
@@ -247,8 +264,8 @@ def _planner_calls(planner):
 def _check_spec(spec):
     if spec.method in NOT_IMPLEMENTED:
         raise NotImplementedError(f"{spec.method} is not implemented")
-    if spec.method not in METHODS:
-        raise ValueError(f"unknown method {spec.method!r}; known: {', '.join(METHODS)}")
+    if spec.method not in ALL_METHODS:
+        raise ValueError(f"unknown method {spec.method!r}; known: {', '.join(ALL_METHODS)}")
     if not isinstance(spec.max_steps, int) or spec.max_steps < 1:
         raise ValueError("max_steps must be an int >= 1")
     if spec.method in CBS_METHODS:
@@ -263,7 +280,7 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
     _check_spec(spec)
 
     from scripts.run_corridor_hybrid_e2e import dev_config
-    from scripts.run_hybrid_resume_dev import dev_resume_config
+    from scripts.run_hybrid_resume_dev import dev_rearm_config, dev_resume_config
     from scripts.run_il import DEFAULT_CKPT, load_scenario, run_episode
     from src.common.deadlock_monitor import DeadlockMonitor
     from src.common.episode_logger import EpisodeLogger, make_run_id
@@ -302,8 +319,12 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
         raw = run_pure_cbs_episode(grid, starts, goals, spec.max_steps, planner=planner,
                                    path_validator=PathGuardValidator(), monitor=monitor, logger=logger)
     else:
-        config = (dev_config(spec.max_steps) if spec.method == GLOBAL_HYBRID_DEV_FULL
-                  else dev_resume_config(H_EXEC_DEV))
+        if spec.method == GLOBAL_HYBRID_DEV_FULL:
+            config = dev_config(spec.max_steps)
+        elif spec.method == GLOBAL_HYBRID_DEV_H3:
+            config = dev_resume_config(H_EXEC_DEV)
+        else:
+            config = dev_rearm_config(H_EXEC_DEV)
         raw = run_global_hybrid_episode(il_policy(), grid, starts, goals, spec.max_steps,
                                         planner=planner, path_validator=PathGuardValidator(),
                                         config=config, monitor=monitor, logger=logger)
@@ -330,10 +351,32 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
     else:
         sources = ["IL"] * raw["steps"]
     mr = monitor.result
+    monitor_record = {
+        "trigger_type": mr.trigger_type,
+        "trigger_reason_code": mr.trigger_reason_code,
+        "trigger_timestep": mr.trigger_timestep,
+        "first_seen": mr.first_seen,
+        "period": mr.period,
+        "overlap_integrity_status": mr.overlap_integrity_status,
+    }
+    if spec.method == GLOBAL_HYBRID_DEV_H3_REARM:
+        # Rearm method only: the fields above are the LAST armed detector's
+        # Trigger; earlier ones are in trigger_history (other methods' record
+        # keeps exactly the six keys above).
+        monitor_record.update({
+            "rearm_count": monitor.rearm_count,
+            "trigger_history": raw["monitor_trigger_history"],
+            "rearms": raw["monitor_rearms"],
+            "triggers": raw["triggers"],
+            "rearm_config": raw["rearm_config"],
+        })
 
+    dev_settings = dict(DEV_SETTINGS[spec.method])
+    if spec.method == GLOBAL_HYBRID_DEV_H3_REARM:
+        dev_settings["rearm_limits"] = dict(raw["rearm_config"])
     record = EpisodeRecord(
         method=spec.method,
-        dev_settings=dict(DEV_SETTINGS[spec.method]),
+        dev_settings=dev_settings,
         run_id=run_id,
         run_dir=str(run_dir),
         scenario=str(scenario),
@@ -365,14 +408,7 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
         transitions=list(raw.get("transitions", [])),
         safety_holds=list(safety.holds) if safety is not None else [],
         safety_armed_t=safety.armed_t if safety is not None else None,
-        monitor={
-            "trigger_type": mr.trigger_type,
-            "trigger_reason_code": mr.trigger_reason_code,
-            "trigger_timestep": mr.trigger_timestep,
-            "first_seen": mr.first_seen,
-            "period": mr.period,
-            "overlap_integrity_status": mr.overlap_integrity_status,
-        },
+        monitor=monitor_record,
         environment=environment_info(spec.solver_root if spec.method in CBS_METHODS else None),
         raw=raw,
     )

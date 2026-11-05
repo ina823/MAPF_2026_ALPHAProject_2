@@ -22,6 +22,19 @@ H_exec (``GlobalHybridConfig.h_exec``), the IL-resume rule
 (``resume_policy``), the CBS recall rule (``recall_policy``) and SAFE_STOP's
 record contents (``safe_stop_handler``).
 
+Optional, DEV opt-in only (``GlobalHybridConfig.rearm``, default None -- with
+None every line of the original state machine runs exactly as before):
+  * on every IL_RESUME -> IL transition the Monitor is rearmed exactly once
+    (``monitor.rearm(actual positions, info["t"])``), never during CBS_EXEC,
+    so a re-stall after the resume becomes a fresh Trigger;
+  * every fresh Trigger is checked, in this order, against the call limit
+    (first call included), the cumulative recorded CBS latency, the
+    cooldown since the last IL resume and the S_t of every earlier call.
+    A failed check ends the episode in SAFE_STOP with that stop_reason
+    (RECALL_LIMIT_EXCEEDED / CBS_TIME_BUDGET_EXCEEDED /
+    RECALL_COOLDOWN_ACTIVE / RECALL_SAME_STATE) and no further move.
+The limit values live in ``MonitorRearmConfig``, which has no defaults.
+
 ``planner(current_positions, goals, grid) -> ReplanResult``, keyed by the
 planner's ``paths_keying`` attribute:
   * "index" (default, Mock planners): positional lists in
@@ -33,8 +46,8 @@ planner's ``paths_keying`` attribute:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Protocol
+from dataclasses import asdict, dataclass
+from typing import Any, Callable, Dict, Optional, Protocol
 
 from src.common import spec
 from src.hybrid.replan_boundary import accept_replan_result, check_validator_pairing
@@ -53,6 +66,12 @@ SUCCESS = "SUCCESS"
 TIMEOUT = "TIMEOUT"
 INTEGRITY_ABORT = "INTEGRITY_ABORT"
 
+# SAFE_STOP reasons of the optional rearm / bounded-recall guard
+RECALL_LIMIT_EXCEEDED = "RECALL_LIMIT_EXCEEDED"
+CBS_TIME_BUDGET_EXCEEDED = "CBS_TIME_BUDGET_EXCEEDED"
+RECALL_COOLDOWN_ACTIVE = "RECALL_COOLDOWN_ACTIVE"
+RECALL_SAME_STATE = "RECALL_SAME_STATE"
+
 
 class ResumePolicy(Protocol):
     def after_exec(self, context: Dict[str, Any]) -> str:
@@ -69,18 +88,54 @@ class SafeStopHandler(Protocol):
         """Return the record stored as result["safe_stop"]."""
 
 
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True)
+class MonitorRearmConfig:
+    """Rearm + bounded CBS recall (DEV opt-in). All fields required -- none
+    of these values is agreed.
+
+    max_cbs_calls       CBS calls allowed per episode, the first one included.
+    cooldown_steps      a recall needs ``t - last IL resume t >= cooldown_steps``.
+    cbs_time_budget_ms  a new call needs the summed recorded ``latency_ms`` of
+                        all earlier calls to be below this (a call with no
+                        recorded latency makes the sum unknown -> refused).
+    """
+
+    max_cbs_calls: int
+    cooldown_steps: int
+    cbs_time_budget_ms: float
+
+    def __post_init__(self):
+        if not _is_int(self.max_cbs_calls) or self.max_cbs_calls < 1:
+            raise ValueError("max_cbs_calls must be an int >= 1")
+        if not _is_int(self.cooldown_steps) or self.cooldown_steps < 0:
+            raise ValueError("cooldown_steps must be an int >= 0")
+        if (isinstance(self.cbs_time_budget_ms, bool)
+                or not isinstance(self.cbs_time_budget_ms, (int, float))
+                or not self.cbs_time_budget_ms > 0):
+            raise ValueError("cbs_time_budget_ms must be a number > 0")
+
+
 @dataclass(frozen=True)
 class GlobalHybridConfig:
-    """All fields required -- none of these rules is agreed yet."""
+    """The first four fields are required -- none of these rules is agreed
+    yet. ``rearm`` is an optional DEV opt-in; None keeps the original
+    single-Trigger behaviour."""
 
     h_exec: int
     resume_policy: ResumePolicy
     recall_policy: RecallPolicy
     safe_stop_handler: SafeStopHandler
+    rearm: Optional[MonitorRearmConfig] = None
 
     def __post_init__(self):
         if not isinstance(self.h_exec, int) or self.h_exec < 1:
             raise ValueError("h_exec must be an int >= 1")
+        if self.rearm is not None and not isinstance(self.rearm, MonitorRearmConfig):
+            raise ValueError("rearm must be a MonitorRearmConfig or None")
 
 
 def run_global_hybrid_episode(
@@ -135,6 +190,27 @@ def run_global_hybrid_episode(
     plan = None
     exec_k = 0
     exec_horizon = 0
+    rearm_cfg = config.rearm
+    monitor_rearms = []     # rearm mode only: one entry per IL_RESUME -> IL
+    triggers = []           # rearm mode only: every fresh Trigger and what happened to it
+    last_resume_t = None
+
+    def current_positions():
+        return {aid: tuple(sim._positions[aid]) for aid in sim._agent_ids}
+
+    def recall_refusal(t):
+        """Rearm mode: the SAFE_STOP reason that forbids a CBS call at t, or None."""
+        if len(cbs_calls) >= rearm_cfg.max_cbs_calls:
+            return RECALL_LIMIT_EXCEEDED
+        latencies = [c["latency_ms"] for c in cbs_calls]
+        if any(v is None for v in latencies) or sum(latencies) >= rearm_cfg.cbs_time_budget_ms:
+            return CBS_TIME_BUDGET_EXCEEDED
+        if last_resume_t is not None and t - last_resume_t < rearm_cfg.cooldown_steps:
+            return RECALL_COOLDOWN_ACTIVE
+        now = current_positions()
+        if any(c["s_t"] == now for c in cbs_calls):
+            return RECALL_SAME_STATE
+        return None
 
     def move_to(new_state, reason=""):
         nonlocal state
@@ -208,7 +284,27 @@ def run_global_hybrid_episode(
                 and r.trigger_timestep == t
                 and t not in handled_triggers
             )
-            if fresh_trigger:
+            if fresh_trigger and rearm_cfg is not None:
+                handled_triggers.add(t)
+                record = {"t": t, "first_seen": r.first_seen, "period": r.period,
+                          "blocking_type": r.blocking_type, "positions": current_positions(),
+                          "cbs_calls_before": len(cbs_calls)}
+                triggers.append(record)
+                if r.overlap_integrity_status != "CLEAN":
+                    record["outcome"] = "OVERLAP_NOT_CLEAN"
+                    continue
+                refusal = recall_refusal(t)
+                if refusal is not None:
+                    record["outcome"] = refusal
+                    stop_reason = refusal
+                    move_to(SAFE_STOP, refusal)
+                    continue
+                if config.recall_policy.allow_call(len(cbs_calls), t):
+                    record["outcome"] = "CBS_REQUEST"
+                    move_to(TRIGGER, "TRIGGER_FULL_REPEAT")
+                else:
+                    record["outcome"] = "RECALL_POLICY_DENIED"
+            elif fresh_trigger:
                 handled_triggers.add(t)
                 if (
                     r.overlap_integrity_status == "CLEAN"
@@ -309,6 +405,16 @@ def run_global_hybrid_episode(
             decision = config.resume_policy.after_exec(context())
             if decision == IL:
                 plan = None
+                if rearm_cfg is not None:
+                    # Exactly once per IL_RESUME -> IL, after the last observed
+                    # step (the final CBS step, or the Trigger step for
+                    # EMPTY_PLAN), with the simulator's actual positions.
+                    positions = current_positions()
+                    monitor.rearm(positions, info["t"])
+                    last_resume_t = info["t"]
+                    monitor_rearms.append({"t": info["t"], "positions": positions,
+                                           "after_call": len(cbs_calls),
+                                           "resume_reason": transitions[-1]["reason"]})
                 move_to(IL)
             elif decision == SAFE_STOP:
                 stop_reason = "RESUME_POLICY_SAFE_STOP"
@@ -322,7 +428,7 @@ def run_global_hybrid_episode(
             termination = SAFE_STOP
 
     final = {aid: tuple(pos) for aid, pos in sim._positions.items()}
-    return {
+    result = {
         "steps": info["t"],
         "done": bool(done),
         "all_at_goal": bool(info["all_at_goal"]),
@@ -342,3 +448,9 @@ def run_global_hybrid_episode(
         "cbs_exec_trace": cbs_exec_trace,
         "exec_mismatch": exec_mismatch,
     }
+    if rearm_cfg is not None:  # extra keys in rearm mode only
+        result["rearm_config"] = asdict(rearm_cfg)
+        result["monitor_rearms"] = monitor_rearms
+        result["triggers"] = triggers
+        result["monitor_trigger_history"] = [asdict(h) for h in monitor.trigger_history]
+    return result

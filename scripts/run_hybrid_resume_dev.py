@@ -61,6 +61,7 @@ from src.hybrid.global_hybrid import (
     TIMEOUT,
     TRIGGER,
     GlobalHybridConfig,
+    MonitorRearmConfig,
     run_global_hybrid_episode,
 )
 from src.simulator.mapf_step_simulator import MAPFStepSimulator
@@ -96,6 +97,37 @@ def dev_resume_config(h_exec=DEFAULT_H_EXEC):
         resume_policy=DevResumeIL(),
         recall_policy=DevSingleCbsCall(),
         safe_stop_handler=DevRecordSafeStop(),
+    )
+
+
+# -- DEV_ONLY rearm candidate (GLOBAL_HYBRID_DEV_H3_REARM) ---------------------
+# Candidate values for a development trial, NOT agreed project policy.
+DEV_REARM_MAX_CBS_CALLS = 2            # first call included
+DEV_REARM_COOLDOWN_STEPS = 2           # IL steps since the last resume before a recall
+DEV_REARM_CBS_TIME_BUDGET_MS = 60_000.0  # summed recorded latency_ms of earlier calls
+
+
+class DevLimitedRecall:
+    """DEV_ONLY recall policy for the rearm trial: always allows; the call
+    limit, budget, cooldown and same-S_t checks are MonitorRearmConfig's."""
+
+    def allow_call(self, call_count, trigger_timestep):
+        return True
+
+
+def dev_rearm_config(h_exec=DEFAULT_H_EXEC, *, max_cbs_calls=DEV_REARM_MAX_CBS_CALLS,
+                     cooldown_steps=DEV_REARM_COOLDOWN_STEPS,
+                     cbs_time_budget_ms=DEV_REARM_CBS_TIME_BUDGET_MS):
+    return GlobalHybridConfig(
+        h_exec=h_exec,  # DEV_ONLY
+        resume_policy=DevResumeIL(),
+        recall_policy=DevLimitedRecall(),
+        safe_stop_handler=DevRecordSafeStop(),
+        rearm=MonitorRearmConfig(  # DEV_ONLY candidate values
+            max_cbs_calls=max_cbs_calls,
+            cooldown_steps=cooldown_steps,
+            cbs_time_budget_ms=cbs_time_budget_ms,
+        ),
     )
 
 

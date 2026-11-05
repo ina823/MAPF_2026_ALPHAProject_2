@@ -45,6 +45,7 @@ from src.compare.common_runner import (
     CBS_METHODS,
     GLOBAL_HYBRID_DEV_FULL,
     GLOBAL_HYBRID_DEV_H3,
+    GLOBAL_HYBRID_DEV_H3_REARM,
     H_EXEC_DEV,
     IL_ONLY,
     PURE_CBS_DEV_SINGLE_PLAN,
@@ -85,12 +86,15 @@ REQUEST_KIND = {
     PURE_CBS_DEV_SINGLE_PLAN: "INITIAL_STATE",
     GLOBAL_HYBRID_DEV_FULL: "IL_STALL_TRIGGER",
     GLOBAL_HYBRID_DEV_H3: "IL_STALL_TRIGGER",
+    GLOBAL_HYBRID_DEV_H3_REARM: "IL_STALL_TRIGGER",
 }
 EXEC_POLICY = {
     PURE_CBS_DEV_SINGLE_PLAN: "DEV_SINGLE_PLAN_FULL",
     GLOBAL_HYBRID_DEV_FULL: "DEV_FULL_PATH",
     GLOBAL_HYBRID_DEV_H3: "DEV_FIXED_H_EXEC",
+    GLOBAL_HYBRID_DEV_H3_REARM: "DEV_FIXED_H_EXEC",
 }
+FIXED_H_EXEC_METHODS = (GLOBAL_HYBRID_DEV_H3, GLOBAL_HYBRID_DEV_H3_REARM)
 
 
 class CompareCsvError(HybridCsvError):
@@ -245,7 +249,7 @@ def build_rows(record, batch_id):
                 "solver_latency_ms": call["latency_ms"],
                 "planner_wall_ms": call.get("planner_wall_ms"),
                 "exec_policy": EXEC_POLICY[method],
-                "h_exec_config": H_EXEC_DEV if method == GLOBAL_HYBRID_DEV_H3 else None,
+                "h_exec_config": H_EXEC_DEV if method in FIXED_H_EXEC_METHODS else None,
                 "planned_horizon": horizon,
                 "exec_window": window,
                 "exec_steps": len(entries),

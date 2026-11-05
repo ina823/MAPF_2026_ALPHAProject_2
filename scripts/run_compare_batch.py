@@ -45,6 +45,7 @@ from src.compare.common_runner import (
     DEFAULT_CBS_TIMEOUT_SEC,
     DEFAULT_MAX_STEPS,
     DEV_SETTINGS,
+    ALL_METHODS,
     METHODS,
     NOT_IMPLEMENTED,
     RunSpec,
@@ -82,7 +83,7 @@ def preflight(args, out_dir):
     for m in args.methods:
         if m in NOT_IMPLEMENTED:
             errors.append(f"method {m} is not implemented")
-        elif m not in METHODS:
+        elif m not in ALL_METHODS:
             errors.append(f"unknown method {m!r}")
     if len(set(args.methods)) != len(args.methods):
         errors.append("duplicate method")
