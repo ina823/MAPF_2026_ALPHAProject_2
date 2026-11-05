@@ -21,6 +21,16 @@ CBS is asked at different times: Pure CBS once at t=0 on S_0
 All method settings except IL_ONLY are DEV settings, not agreed policies, and
 every scenario here is a Development scenario (no Validation / Test data).
 
+Also refused before any run: an output path longer than the Windows MAX_PATH
+limit (checked on the real run-id format and file names), and -- only with
+--require-hash-seed -- an unset or unverifiable PYTHONHASHSEED.
+
+fair_batch (same conditions for every method) and reproducible_batch (a fixed
+PYTHONHASHSEED verified in this process, in an inherited child and on every
+CBS call) are recorded separately; see src/compare/provenance.py. A seed-unset
+batch keeps its fair_batch verdict and is recorded as not reproducible. A
+PYTHONHASHSEED that differs between CBS calls of one batch makes it unfair.
+
 Exit codes: 0 fair batch, 1 batch written but not fair, 2 refused before running.
 
 Usage (from the repository root):
@@ -39,9 +49,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.compare import provenance  # first: captures the start-up PYTHONHASHSEED
 from scripts.run_il import DEFAULT_CKPT
 from src.compare import common_runner
 from src.compare.common_runner import (
+    CBS_METHODS,
     DEFAULT_CBS_TIMEOUT_SEC,
     DEFAULT_MAX_STEPS,
     DEV_SETTINGS,
@@ -107,6 +119,10 @@ def preflight(args, out_dir):
         errors.append("project tree is dirty (commit first, or --allow-dirty for an unfair batch)")
     if out_dir.exists():
         errors.append(f"output directory already exists: {out_dir}")
+    valid_methods = [m for m in args.methods if m in ALL_METHODS]
+    if valid_methods and args.scenarios:
+        errors += provenance.path_length_errors(out_dir, args.scenarios, valid_methods,
+                                                cbs_methods=CBS_METHODS)
     return errors
 
 
@@ -122,6 +138,8 @@ def main(argv=None):
     ap.add_argument("--out-dir", type=Path, default=None,
                     help="new batch directory (default: outputs/logs/compare_<timestamp>)")
     ap.add_argument("--allow-dirty", action="store_true", help="run on a dirty tree; the batch is then unfair")
+    ap.add_argument("--require-hash-seed", action="store_true",
+                    help="refuse unless PYTHONHASHSEED was fixed at start-up and verified by both probes")
     args = ap.parse_args(argv)
     args.scenarios = list(args.scenarios or DEFAULT_SCENARIOS)
     args.methods = list(args.methods or METHODS)
@@ -132,6 +150,19 @@ def main(argv=None):
         for e in errors:
             print(f"REFUSED: {e}")
         return 2
+    parent_seed = provenance.hash_seed_info()
+    seed_layers = provenance.verify_seed_layers(parent_seed)
+    if args.require_hash_seed:
+        seed_errors = list(seed_layers["reasons"])
+        if parent_seed["mode"] not in provenance.FIXED_MODES:
+            seed_errors.insert(0, f"PYTHONHASHSEED not fixed at start-up ({parent_seed['mode']})")
+        elif (seed_layers["parent_verified"], seed_layers["inherited_status"]) != ("VERIFIED", "OK"):
+            seed_errors.append(f"hash seed not verified (parent {seed_layers['parent_verified']}, "
+                               f"inherited {seed_layers['inherited_status']})")
+        if seed_errors:
+            for e in seed_errors:
+                print(f"REFUSED: {e}")
+            return 2
 
     batch_id = out_dir.name
     out_dir.mkdir(parents=True, exist_ok=False)
@@ -157,6 +188,10 @@ def main(argv=None):
     fair, reasons = check_fairness(
         episodes, scenarios=[Path(s).name for s in args.scenarios], methods=args.methods,
         max_steps=DEFAULT_MAX_STEPS, cbs_timeout_sec=DEFAULT_CBS_TIMEOUT_SEC, checkpoint_sha256=ckpt_sha)
+    seed_consistency = provenance.check_seed_consistency(parent_seed, records)
+    if seed_consistency:   # a seed that changed between runs / CBS calls: not one comparison
+        fair, reasons = False, list(reasons) + seed_consistency
+    reproducibility = provenance.reproducibility_record(parent_seed, seed_layers, seed_consistency)
 
     manifest = {
         "batch_id": batch_id,
@@ -183,6 +218,9 @@ def main(argv=None):
         "environment": environment_info(args.solver_root),
         "fair_batch": fair,
         "fairness_reasons": reasons,
+        "reproducibility": reproducibility,
+        "cbs_request_states": provenance.cbs_request_states(records),
+        "cbs_request_states_note": provenance.REQUEST_STATES_NOTE,
         "csv_cell_checks": checks,
         "csv_vs_runner_checks": runner_checks,
     }
@@ -194,6 +232,9 @@ def main(argv=None):
     print(f"rows        : {len(episodes)} episodes, {len(calls)} CBS calls; "
           f"cell checks {checks}, runner checks {runner_checks}")
     print(f"fair_batch  : {fair}" + (f"  reasons: {reasons}" if reasons else ""))
+    print(f"reproducible: {reproducibility['reproducible_batch']}  PYTHONHASHSEED mode="
+          f"{reproducibility['seed_mode']} value={reproducibility['seed_value']!r} "
+          f"(parent {reproducibility['parent_verified']}, inherited {reproducibility['inherited_probe_status']})")
     return 0 if fair else 1
 
 

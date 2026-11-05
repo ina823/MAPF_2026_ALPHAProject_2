@@ -22,6 +22,7 @@ process-wide, so planners must not be called from several threads at once.
 from __future__ import annotations
 
 import contextlib
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -58,6 +59,9 @@ class CbsRuntimePlanner:
             "artifacts_dir": work_dir / REPLANNER_WORK_DIR,
             "solver_root": self.solver_root,
             "timeout_sec": self.timeout_sec,
+            # Record only: the value the cbs.py subprocess inherits (src/cbs_adapter.py
+            # passes no env=). None = unset in this process's environment.
+            "pythonhashseed_env": os.environ.get("PYTHONHASHSEED"),
         }
         self.calls.append(record)
         with contextlib.chdir(work_dir):

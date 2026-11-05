@@ -49,6 +49,9 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Imported at module load so provenance.STARTUP_ENV_VALUE is captured early.
+from src.compare.provenance import hash_seed_info
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 IL_ONLY = "IL_ONLY"
@@ -216,6 +219,7 @@ def _version(dist):
 
 def environment_info(solver_root=None):
     return {
+        "hash_seed": hash_seed_info(),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "torch": _version("torch"),
@@ -255,6 +259,7 @@ def _planner_calls(planner):
             "work_dir": str(c["work_dir"]),
             "timeout_sec": c["timeout_sec"],
             "status": c.get("status"),
+            **({"pythonhashseed_env": c["pythonhashseed_env"]} if "pythonhashseed_env" in c else {}),
             "paths": ({aid: [tuple(p) for p in path] for aid, path in paths.items()}
                       if paths is not None else None),
         })
