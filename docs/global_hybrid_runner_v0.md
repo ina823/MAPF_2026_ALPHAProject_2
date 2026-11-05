@@ -158,6 +158,7 @@ IL은 t=6에 agent 2를 (1,5)로 다시 내려 계획(k=4: (0,5) 대기)과 달�
 - **H_exec**: 경로 전체 실행은 세 시나리오 모두 SUCCESS, H_exec=3은 Bottleneck에서 실패. H_exec와 복귀 조건(예: 병목 통과 여부) 결정이 필요하다.
 - **CBS 경로 차이**: 동일한 Bottleneck S_t에서 7.1과 7.2의 CBS 결과로 서로 다른 유효 경로가 관찰됐다(Path[1]의 agent 3: (3,6) vs (4,7), 둘 다 Path Guard 통과). 원인은 미확인이다.
 - 각 결과는 1회 실행이다. 세 시나리오의 Agent ID는 0..n-1이라 ID/인덱스 혼동은 실제 실행으로 구별되지 않으며, 단위 테스트(`test_cbs_runtime_bridge.py`, id 3·7)로만 검증된다.
+- 위 CBS 경로 차이의 원인 조사(PYTHONHASHSEED)와 재현성·공정성 절차는 [재현성·비교 공정성 v1](reproducibility_v1.md)에 정리했다.
 
 ## 8. Global Hybrid CSV 내보내기 (`src/hybrid/hybrid_csv.py`, `8b845dc`)
 저장된 실행 폴더(`outputs/hybrid_e2e/<run_id>/`)의 `result.json`과 `<run_id>_steps.csv`를 **읽기만** 해서 Global 전용 CSV 2개를 새 폴더에 만든다.
