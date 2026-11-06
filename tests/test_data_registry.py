@@ -218,6 +218,81 @@ class TestDecisions(unittest.TestCase):
         self.assertEqual(rec["instance_id"], "VAL_fbot01_001")
 
 
+def open_map(i):
+    """A family-free 6x6 map, distinct per i (one wall cell moved)."""
+    g = np.zeros((6, 6), dtype=int)
+    g[2, 1:5] = 1
+    g[4, i % 6] = 1
+    return g
+
+
+class TestRulesV2(unittest.TestCase):
+    def setUp(self):
+        self.reg = rg.Registry()
+        self.dev = self.reg.register(cand(source="dev/a.json"), "DEV", registered_at="d")
+
+    def test_instance_fp_is_exact_identity_only(self):
+        a = cand()
+        self.assertEqual(rg.instance_fp(a), rg.instance_fp(cand()))
+        self.assertNotEqual(rg.instance_fp(a), rg.instance_fp(cand(G, STARTS[::-1], GOALS[::-1])))
+        self.assertNotEqual(rg.instance_fp(a), rg.instance_fp(cand(*rotated(1))))
+        padded = np.pad(G, 1, constant_values=1)
+        self.assertNotEqual(rg.instance_fp(a), rg.instance_fp(
+            cand(padded, [(r + 1, c + 1) for r, c in STARTS], [(r + 1, c + 1) for r, c in GOALS])))
+
+    def test_family_cap_for_new_candidates(self):
+        g = open_map(0)
+        for n, (s, t) in enumerate((((0, 0), (5, 5)), ((0, 1), (5, 4)), ((0, 2), (5, 3)))):
+            rec = self.reg.register(cand(g, [s], [t], structure="bottleneck"), "VAL", registered_at="d")
+            self.assertEqual(rec["instance_id"], f"VAL_fbot01_{n + 1:03d}")
+        d = self.reg.evaluate(cand(g, [(0, 3)], [(5, 2)]), "VAL")
+        self.assertEqual(d.status, rg.REJECT)
+        self.assertTrue(any(r.startswith("FAMILY_CAP") for r in d.reasons))
+
+    def test_family_cap_not_retroactive_for_legacy_dev(self):
+        for i in range(3):
+            self.reg.register(cand(G, [(0, 0)], [(3, i)]), "DEV", registered_at="d", apply_family_cap=False)
+        self.assertEqual(sum(r["family_id"] == "fcorr01" for r in self.reg.records), 4)
+        self.assertEqual(self.reg.evaluate(cand(G, [(0, 0)], [(1, 0)]), "DEV").status, rg.REJECT)
+        self.assertEqual(self.reg.consistency_errors(), [])        # legacy DEV over cap is fine
+
+    def test_consistency_flags_held_out_over_cap(self):
+        g = open_map(1)
+        recs = list(self.reg.records)
+        for i in range(4):
+            c = cand(g, [(0, i)], [(5, 5 - i)], structure="bottleneck")
+            c.update(instance_id=f"VAL_fbot01_{i + 1:03d}", family_id="fbot01", split="VAL",
+                     relations=[{"other": f"VAL_fbot01_{j + 1:03d}", "relation": rg.SAME_MAP,
+                                 "status": rg.CONFIRMED, "details": {}} for j in range(i)])
+            recs.append(c)
+        errors = rg.Registry(recs).consistency_errors()
+        self.assertTrue(any(e.startswith("FAMILY_CAP exceeded: fbot01") for e in errors))
+
+    def test_struct_match_never_auto_enters_test(self):
+        d = {"structure": "corridor_bays", "length": 15}
+        self.reg = rg.Registry()
+        dev = self.reg.register(cand(descriptor=d), "DEV", registered_at="d")
+        c = cand(open_map(2), [(0, 0)], [(5, 5)], descriptor=d)
+        self.assertEqual(self.reg.evaluate(c, "VAL").status, rg.HOLD)       # unresolved
+        d_test = self.reg.evaluate(c, "TEST")
+        self.assertEqual(d_test.status, rg.REJECT)
+        self.reg.reviews.add(rg.instance_fp(dev), rg.instance_fp(c), rg.STRUCT_MATCH,
+                             rg.UNRELATED, "reviewer", "different layout")
+        self.assertEqual(self.reg.evaluate(c, "VAL").status, rg.ACCEPT)     # approved for VAL only
+        d_test = self.reg.evaluate(c, "TEST")
+        self.assertEqual(d_test.status, rg.REJECT)
+        self.assertTrue(any(r.startswith("STRUCT_MATCH_TEST_FORBIDDEN") for r in d_test.reasons))
+
+    def test_unresolved_review_with_pilot_blocks_test(self):
+        pilot = self.reg.register(cand(open_map(3), [(0, 0)], [(5, 5)], structure="empty"), "PILOT",
+                                  registered_at="d")
+        g = open_map(3).copy()
+        g[0, 5] = 1                                                          # NEAR_MAP of the pilot
+        d = self.reg.evaluate(cand(g, [(0, 0)], [(5, 5)]), "TEST")
+        self.assertEqual(d.status, rg.HOLD)
+        self.assertIn(pilot["instance_id"], d.reasons[0])
+
+
 class TestFiles(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -292,6 +367,21 @@ class TestFiles(unittest.TestCase):
             with self.assertRaises(OSError):
                 rg.create_files_exclusive([(a, b"x\n"), (b, b"y\n")])
         self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_append_to_file(self):
+        path = self.dir / "instances_v1.jsonl"
+        rg.create_files_exclusive([(path, self.reg.to_jsonl())])
+        loaded = rg.Registry.load(path)
+        n = len(loaded.records)
+        loaded.register(cand(open_map(4), [(0, 0)], [(5, 5)], structure="empty"), "PILOT", registered_at="d")
+        loaded.append_to_file(path, n)
+        self.assertTrue(path.read_bytes().startswith(self.reg.to_jsonl()))
+        self.assertEqual(len(rg.Registry.load(path).records), n + 1)
+        # editing an existing record in memory is refused
+        again = rg.Registry.load(path)
+        again.records[0] = dict(again.records[0], usage_status="EDITED")
+        with self.assertRaises(rg.RegistryError):
+            again.append_to_file(path, len(again.records))
 
     def test_replace_checked(self):
         path = self.dir / "instances_v1.jsonl"

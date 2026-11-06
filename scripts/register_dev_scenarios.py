@@ -91,10 +91,11 @@ def build_dev_registry(registered_at: str, root: Path = PROJECT_ROOT) -> Registr
         cand["structure_type"] = STRUCTURE_BY_MAP_ID[cand["map_id"]]
         cand["structure_descriptor"] = None
         cand["generator"] = None
-        decision = reg.evaluate(cand, "DEV")
+        # legacy import: the family cap (registry.FAMILY_CAP) is not applied retroactively
+        decision = reg.evaluate(cand, "DEV", apply_family_cap=False)
         if decision.status != ACCEPT:
             raise RegistryError(f"{key}: {decision.status} {decision.reasons}")
-        reg.register(cand, "DEV", registered_at=registered_at,
+        reg.register(cand, "DEV", registered_at=registered_at, apply_family_cap=False,
                      extra={"dev_role": dev_role, "usage_status": usage_status,
                             "role_source": "docs/data_split_plan_v1.md section 1"})
     return reg

@@ -1,0 +1,59 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        12,
+        1
+      ],
+      "start": [
+        0,
+        1
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        13,
+        1
+      ],
+      "start": [
+        2,
+        1
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        0,
+        1
+      ],
+      "start": [
+        14,
+        1
+      ]
+    }
+  ],
+  "generator": {
+    "code_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "descriptor": {
+      "bays_down": [],
+      "bays_up": [
+        5,
+        9
+      ],
+      "generator": "alpha2_structured",
+      "generator_version": 1,
+      "length": 15,
+      "n_east": 2,
+      "n_west": 1,
+      "structure": "corridor_bays"
+    },
+    "name": "alpha2_structured",
+    "seed": 11,
+    "version": 1
+  },
+  "map_file": "map_pilot_corridor_bays_l15.npy",
+  "map_id": "pilot_corridor_bays_l15",
+  "scenario_id": "scen_pilot_corridor_bays_l15"
+}

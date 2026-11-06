@@ -18,13 +18,22 @@ Rules (docs/fingerprint_registry_v1.md, sections 3-5):
     NEAR_MAP        same trimmed shape (any D4), 1..NEAR_MAP_MAX_DIFF cells differ
     STRUCT_MATCH    equal, non-null generator structure_descriptor
 
+  Instance identity vs family (RULES_VERSION 2)
+    instance_fp(rec) = sha256(grid_fp ":" agents_ordered_fp) is the ONLY
+    instance identity (EXACT). Rotated/reflected, relabelled, trimmed fields
+    (agents_canon_*, agents_set_fp, grid_trim_fp, map_canon_fp) are used for
+    relations/families only, never as an instance identity.
+
   Decisions for a candidate in split S (domain(DEV)=domain(PILOT)=
   domain(EXTERNAL_REF)="development"; VAL and TEST are their own domains)
     REJECT  invalid instance, same file already registered (same or other
             split), EXACT with any record, a confirmed relation (or a review
             resolved RELATED) with a record of another domain, confirmed
             relations to two different families, VAL/TEST with agent_id !=
-            list index
+            list index, S = TEST with a STRUCT_MATCH to a record of another
+            domain (whatever the review decision), joining a family that
+            already has FAMILY_CAP records in S (new candidates only; the
+            legacy Development import is exempt, see build_dev_registry)
     HOLD    an unresolved REVIEW relation, when S is VAL/TEST or the other
             record is in another domain
     ACCEPT  otherwise; joins the family of its confirmed relations, or a new one
@@ -70,9 +79,12 @@ REVIEW_RELATIONS = (SUBMAP, NEAR_MAP, STRUCT_MATCH)
 CONFIRMED = "CONFIRMED"
 REVIEW = "REVIEW"
 
+RULES_VERSION = 2          # decision rules (fingerprints themselves: fp_schema)
+
 # REVIEW thresholds (fp_schema 1; pending approval, see docs section 3.3)
 NEAR_MAP_MAX_DIFF = 2      # differing cells, same trimmed shape
 SUBMAP_MIN_AREA = 9        # the smaller trimmed map must have >= this many cells
+FAMILY_CAP = 3             # max records of one family per split, new candidates only
 
 ACCEPT, HOLD, REJECT = "ACCEPT", "HOLD", "REJECT"
 
@@ -174,13 +186,17 @@ def _pair_key(a: str, b: str) -> Tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
-def instance_key(rec: Dict) -> str:
-    """Identity of an instance independent of registration (grid + ordered agents).
+def instance_fp(rec: Dict) -> str:
+    """The instance identity: sha256 of ``grid_fp + ":" + agents_ordered_fp``.
 
-    Unique within a registry because EXACT duplicates are refused; used to key
-    review decisions so a decision can be made before the candidate has an id.
+    Two records have the same instance_fp exactly when they are EXACT. Unique
+    within a registry because EXACT duplicates are refused; also keys review
+    decisions so a decision can be made before the candidate has an id.
     """
-    return f"{rec['grid_fp']}:{rec['agents_ordered_fp']}"
+    return _sha256_bytes(f"{rec['grid_fp']}:{rec['agents_ordered_fp']}".encode("utf-8"))
+
+
+instance_key = instance_fp   # name used by ReviewBook callers
 
 
 @dataclass
@@ -272,9 +288,13 @@ class Registry:
         return {r["instance_id"]: r for r in self.records}
 
     # -- decisions --
-    def evaluate(self, candidate: Dict, split: str) -> Decision:
+    def evaluate(self, candidate: Dict, split: str, *, apply_family_cap: bool = True) -> Decision:
         """Decide whether ``candidate`` (a fingerprint_scenario()/compute_fingerprints()
-        dict plus source info and structure_type) may be registered in ``split``."""
+        dict plus source info and structure_type) may be registered in ``split``.
+
+        ``apply_family_cap=False`` is only for re-importing the legacy
+        Development set (scripts/register_dev_scenarios.py), which predates
+        the cap and is not re-judged by it."""
         if split not in SPLITS:
             raise RegistryError(f"unknown split {split!r}")
         reasons, holds, relations = [], [], []
@@ -302,6 +322,10 @@ class Registry:
                     continue
                 related = rel["status"] == CONFIRMED or entry.get("review_decision") == RELATED
                 unresolved = rel["status"] == REVIEW and entry.get("review_decision") is None
+                if rel["relation"] == STRUCT_MATCH and split == "TEST" and cross:
+                    reasons.append(f"STRUCT_MATCH_TEST_FORBIDDEN: with {rec['instance_id']} "
+                                   f"({rec['split']}); a review decision does not lift this")
+                    continue
                 if related:
                     families.add(rec["family_id"])
                     if cross:
@@ -313,6 +337,11 @@ class Registry:
         if len(families) > 1:
             reasons.append(f"FAMILY_CONFLICT: related to families {sorted(families)}")
         family_id = next(iter(families)) if len(families) == 1 else None
+        if family_id is not None and apply_family_cap:
+            members = sum(1 for r in self.records if r["split"] == split and r["family_id"] == family_id)
+            if members >= FAMILY_CAP:
+                reasons.append(f"FAMILY_CAP: family {family_id} already has {members} record(s) "
+                               f"in {split} (cap {FAMILY_CAP})")
         if reasons:
             return Decision(REJECT, split, family_id, relations, reasons + holds)
         if holds:
@@ -330,9 +359,9 @@ class Registry:
         return f"f{abbr}{(max(used) + 1) if used else 1:02d}"
 
     def register(self, candidate: Dict, split: str, *, registered_at: str,
-                 extra: Optional[Dict] = None) -> Dict:
+                 extra: Optional[Dict] = None, apply_family_cap: bool = True) -> Dict:
         """Evaluate and, only on ACCEPT, append a new record. Raises otherwise."""
-        decision = self.evaluate(candidate, split)
+        decision = self.evaluate(candidate, split, apply_family_cap=apply_family_cap)
         if decision.status != ACCEPT:
             raise RegistryError(f"{decision.status}: " + "; ".join(decision.reasons))
         n = 1 + sum(1 for r in self.records
@@ -395,9 +424,30 @@ class Registry:
                     and (a["split"] in HELD_OUT or b["split"] in HELD_OUT)):
                 errors.append(f"UNRESOLVED_REVIEW {rel['relation']} {rel['a']} / {rel['b']} "
                               f"touches a held-out split")
+            if (rel["relation"] == STRUCT_MATCH and "TEST" in (a["split"], b["split"])
+                    and DOMAIN[a["split"]] != DOMAIN[b["split"]]):
+                errors.append(f"STRUCT_MATCH {rel['a']} / {rel['b']} crosses into TEST")
         for key in sorted(stored ^ recomputed):
             errors.append(f"stored/recomputed relation mismatch: {key}")
+        groups = Counter((r["split"], r["family_id"]) for r in self.records)
+        for (split, fid), n in sorted(groups.items()):
+            if n > FAMILY_CAP and split != "DEV":   # DEV: legacy import, cap not retroactive
+                errors.append(f"FAMILY_CAP exceeded: {fid} has {n} records in {split}")
         return errors
+
+    def append_to_file(self, path, n_existing: int) -> None:
+        """Rewrite ``path`` with all records, refusing unless the first
+        ``n_existing`` records' bytes are unchanged (append-only) and the file
+        still has the sha256 it was loaded with."""
+        path = Path(path)
+        old = path.read_bytes()
+        head = Registry(self.records[:n_existing]).to_jsonl()
+        if old != head:
+            raise RegistryError(f"{path}: existing records changed (append-only violated)")
+        new = self.to_jsonl()
+        if not new.startswith(old):
+            raise RegistryError(f"{path}: new content does not extend the old content")
+        replace_file_checked(path, new, self.source_sha256)
 
     def family_summary(self) -> Dict:
         fams: Dict[str, Dict] = defaultdict(lambda: {"members": [], "splits": Counter(),
@@ -426,7 +476,9 @@ class Registry:
             "relation_counts": dict(sorted(Counter(r["relation"] for r in rels).items())),
             "review_items": review_items,
             "unresolved_review_count": sum(1 for r in review_items if r["review_decision"] is None),
-            "thresholds": {"NEAR_MAP_MAX_DIFF": NEAR_MAP_MAX_DIFF, "SUBMAP_MIN_AREA": SUBMAP_MIN_AREA},
+            "rules_version": RULES_VERSION,
+            "thresholds": {"NEAR_MAP_MAX_DIFF": NEAR_MAP_MAX_DIFF, "SUBMAP_MIN_AREA": SUBMAP_MIN_AREA,
+                           "FAMILY_CAP": FAMILY_CAP},
         }
 
     def summary_json(self) -> bytes:

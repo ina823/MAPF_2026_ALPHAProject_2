@@ -1,0 +1,68 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        12,
+        3
+      ],
+      "start": [
+        0,
+        3
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        12,
+        5
+      ],
+      "start": [
+        1,
+        0
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        0,
+        0
+      ],
+      "start": [
+        12,
+        2
+      ]
+    },
+    {
+      "agent_id": 3,
+      "goal": [
+        1,
+        4
+      ],
+      "start": [
+        13,
+        5
+      ]
+    }
+  ],
+  "generator": {
+    "code_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "descriptor": {
+      "door_len": 2,
+      "door_row": 2,
+      "generator": "alpha2_structured",
+      "generator_version": 1,
+      "n_east": 2,
+      "n_west": 2,
+      "room_h": 6,
+      "room_w": 6,
+      "structure": "rooms_door"
+    },
+    "name": "alpha2_structured",
+    "seed": 12,
+    "version": 1
+  },
+  "map_file": "map_pilot_rooms_door_6x14.npy",
+  "map_id": "pilot_rooms_door_6x14",
+  "scenario_id": "scen_pilot_rooms_door_6x14"
+}

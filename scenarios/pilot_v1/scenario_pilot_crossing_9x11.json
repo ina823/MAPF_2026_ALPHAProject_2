@@ -1,0 +1,65 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        5,
+        8
+      ],
+      "start": [
+        5,
+        1
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        10,
+        2
+      ],
+      "start": [
+        1,
+        2
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        1,
+        6
+      ],
+      "start": [
+        9,
+        6
+      ]
+    }
+  ],
+  "generator": {
+    "code_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "descriptor": {
+      "corridor_cols": [
+        5
+      ],
+      "corridor_rows": [
+        2,
+        6
+      ],
+      "flows": [
+        "S@col5",
+        "E@row2",
+        "W@row6"
+      ],
+      "generator": "alpha2_structured",
+      "generator_version": 1,
+      "height": 9,
+      "structure": "crossing",
+      "width": 11
+    },
+    "name": "alpha2_structured",
+    "seed": 13,
+    "version": 1
+  },
+  "map_file": "map_pilot_crossing_9x11.npy",
+  "map_id": "pilot_crossing_9x11",
+  "scenario_id": "scen_pilot_crossing_9x11"
+}

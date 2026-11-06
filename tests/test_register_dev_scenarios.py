@@ -89,11 +89,14 @@ class TestCommittedRegistry(unittest.TestCase):
         if not instances.is_file():
             self.skipTest("registry/ not generated yet")
         loaded = rg.Registry.load(instances)
-        dates = {r["registered_at"] for r in loaded.records}
+        dev = [r for r in loaded.records if r["split"] == "DEV"]
+        self.assertEqual(loaded.records[:16], dev)           # the 16 DEV lines come first
+        dates = {r["registered_at"] for r in dev}
         self.assertEqual(len(dates), 1)
         fresh = rds.build_dev_registry(dates.pop())
-        self.assertEqual(instances.read_bytes(), fresh.to_jsonl())
-        self.assertEqual((REGISTRY / rds.FAMILIES).read_bytes(), fresh.summary_json())
+        # DEV lines are byte-identical to a fresh read-only import (append-only registry)
+        self.assertTrue(instances.read_bytes().startswith(fresh.to_jsonl()))
+        self.assertEqual((REGISTRY / rds.FAMILIES).read_bytes(), loaded.summary_json())
 
     def test_check_registry_passes(self):
         if not (REGISTRY / rds.INSTANCES).is_file():

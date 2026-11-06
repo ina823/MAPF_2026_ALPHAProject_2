@@ -3,6 +3,8 @@
 작성 2026-11-05. 상태: **계획 초안, 승인 대기**. 이 문서는 데이터를 만들거나 실험을 실행하지 않는다.
 숫자 중 "제안"이라고 적은 것은 확정값이 아니다. 확인하지 못한 사항은 **[확인 필요]**로 표시한다.
 
+개정 v1.1 (2026-11-05): 3.2절 판정표, 5절 `instance_fp`, 6.2절 family 상한, 7절 IL 입력 분포 기준을 **구현 코드와 일치하도록** 고쳤다(`src/data/registry.py` `RULES_VERSION = 2`, `src/data/il_compat.py`). 상세 규칙은 [`fingerprint_registry_v1.md`](fingerprint_registry_v1.md). `validation_test_split_v1.md`의 규칙은 바꾸지 않았다.
+
 관련 문서:
 - [`validation_test_split_v1.md`](validation_test_split_v1.md) — 역할 정의, family 정의, seed 재실행 규칙, 동결 원칙. **이 문서는 그 규칙을 바꾸지 않고 실행 절차로 구체화한다.**
 - [`deadlock_definition_v1.md`](deadlock_definition_v1.md) — 6절(근거 instance), 8.3·8.4절(분리·재실행 원칙).
@@ -76,18 +78,25 @@
 ### 3.1 판정 대상
 새 instance를 등록할 때마다, 기존 **모든** instance(Development + 이미 등록된 Validation·Test)와 비교한다.
 
-### 3.2 판정 단계 (위에서부터, 하나라도 걸리면 그 단계의 결론을 따른다)
+### 3.2 판정 단계 (v1.1 — 코드 `src/data/registry.py`와 같음)
 
-| 단계 | 검사 | 결론 |
-|---|---|---|
-| D1 | `instance_fp`가 같음 (지도 + 시작·목표 전체 동일) | **중복** — 등록 거부 |
-| D2 | `map_fp_canon`이 같음 (회전·반사·평행이동 정규화 후 같은 지도) | **같은 family** — 기존 instance와 같은 역할로만 등록 가능 |
-| D3 | 기존 지도를 잘라 내거나(crop) 테두리를 덧붙인(pad) 것 (부분 일치) | **같은 family** |
-| D4 | 시작·목표 쌍 중 하나라도 정규화 후 다른 instance와 같고 지도도 D2에서 같음 | 같은 family (부분 중복으로 기록) |
-| D5 | 생성 파라미터 벡터가 Development 지도의 값과 같음 (예: 5×11 복도 + 대피칸 위치 1, 5×9 + 문 1칸) | **Test 등록 금지**, Validation은 승인 시에만 |
-| D6 | 위 어디에도 해당 없음 | 새 family |
+**instance 판정과 family 판정은 다른 값으로 한다.** 동일 instance는 `instance_fp`(원래 격자 + ID 순서대로의 시작·목표)가 같은 경우뿐이다. 회전·반사, ID 재배열, 벽 테두리 제거는 family 관계 판정에만 쓰고, 그런 instance를 실행상 같은 instance로 취급하지 않는다.
 
-- D2의 정규화: 지도를 8가지 대칭(회전 4 × 반사 2)으로 변환하고, 벽 테두리를 제거한 뒤 행 우선 바이트열의 sha256 중 사전순 최솟값을 `map_fp_canon`으로 쓴다. 시작·목표도 같은 변환을 적용한다.
+| 단계 | 관계 (코드 이름) | 검사 | 결론 |
+|---|---|---|---|
+| D1 | `EXACT` | `instance_fp`가 같음 | **중복** — 어느 split이든 등록 거부 |
+| D1a | `RELABEL_EQUIV` | 같은 격자, 시작·목표 쌍 집합은 같고 ID 순서만 다름 | 관련 instance (같은 family). 다른 split이면 거부 |
+| D3a | `TRIM_EQUIV` | 전부 벽인 테두리만 다르고, 줄인 격자와 시작·목표가 같음 | 관련 instance (같은 family). 다른 split이면 거부 |
+| D2 | `SYMMETRY_EQUIV` | 지도와 시작·목표를 **함께** 회전·반사했을 때 같음 | 관련 instance (같은 family). 다른 split이면 거부 |
+| D2/D4 | `SAME_MAP` | 정규화 지도가 같고 시작·목표가 다름 (시작·목표 일부 공유 포함) | 같은 family. 다른 split이면 거부 |
+| D3b | `SUBMAP` (REVIEW) | 한 지도가 다른 지도의 일부 창과 같음 (회전·반사 포함) | 사람이 판정. 미해결이면 VAL/TEST 등록 보류(HOLD) |
+| D3c | `NEAR_MAP` (REVIEW) | 같은 크기, 1~2칸만 다름 | 사람이 판정. 미해결이면 보류 |
+| D5 | `STRUCT_MATCH` (REVIEW) | 생성 파라미터(`structure_descriptor`)가 같음 | **Test는 다른 도메인과 일치하면 판정과 관계없이 거부**. Validation은 사람이 UNRELATED로 판정한 경우에만 등록 |
+| D6 | 없음 | 위 어디에도 해당 없음 | 새 family |
+
+- 정규화: 전부 벽인 바깥 행·열을 제거한 뒤 8가지 대칭(회전 4 × 반사 2) 중 텍스트가 가장 작은 것을 `map_canon_fp`로 쓴다. 시작·목표도 같은 변환을 적용한다.
+- 다른 split(정확히는 다른 도메인: development = DEV·PILOT·EXTERNAL_REF / validation / test) 사이에서는 위 관련 관계와 미해결 REVIEW를 모두 **누수로 보고 보수적으로** 처리한다. 미해결 REVIEW는 family를 자동으로 합치지 않는다.
+- v1 초안의 D3("잘라 내거나 덧붙인 지도 = 같은 family")은 벽 테두리만 다른 경우(D3a, 확정)와 그 밖의 부분 일치(D3b, REVIEW)로 나누었다. D3b는 확인 전까지 VAL/TEST에 들어가지 못하므로 초안보다 엄격하다.
 - D5는 `validation_test_split_v1.md` 4.1절 정의를 바꾸지 않는다. 생성기가 우연히 Development 지도와 사실상 같은 지도를 만드는 경우를 막는 **추가 검사**다.
 - 같은 구조 **유형**(복도·교차로·병목)이라는 이유만으로 같은 family가 되지는 않는다. 지도 배치가 달라야 새 family다.
 
@@ -108,27 +117,26 @@
 
 ## 5. instance 기록 규칙 (레지스트리)
 
-새 instance마다 레지스트리에 한 행을 기록한다. 파일 형식(JSON 또는 CSV)과 위치는 승인 후 정한다(11절).
+새 instance마다 `registry/instances_v1.jsonl`에 한 줄을 추가한다(추가만 허용, 기존 줄은 바이트 단위로 보존). 필드 이름은 구현(`fingerprint_registry_v1.md` 2절)을 따른다.
 
 | 필드 | 내용 |
 |---|---|
-| `instance_id` | `<split>_<family_id>_<NNN>` (예: `VAL_fcorr03_002`). split ∈ {`DEV`, `VAL`, `TEST`, `PILOT`} |
-| `family_id` | `f<구조약어><번호>` (예: `fcorr03`). 3.2절 D2~D5에서 같은 family이면 같은 id |
+| `instance_id` | `<split>_<family_id>_<NNN>` (예: `VAL_fcorr03_002`). split ∈ {`DEV`, `PILOT`, `EXTERNAL_REF`, `VAL`, `TEST`} |
+| `family_id` | `f<구조약어><번호>` (예: `fcorr03`). 3.2절의 확정 관계(또는 사람이 RELATED로 판정한 REVIEW)로 이어진 instance는 같은 id |
 | `split` | 역할. 등록 후 바꾸지 않는다 (Development → Validation/Test 승격 금지) |
-| `map_fp` | 지도 `.npy` 파일의 sha256 (원본 그대로) |
-| `map_fp_canon` | 3.2절 정규화 지도 fingerprint |
-| `grid_fp` | 0/1 격자 배열(dtype int64, 행 우선) 바이트열의 sha256 — `.npy` 헤더 차이와 무관 |
-| `agents_fp` | agent id 순서대로 `(start_row, start_col, goal_row, goal_col)`을 이은 문자열의 sha256 |
-| `agents_fp_canon` | 정규화 변환 후, agent 순서와 무관하게 정렬한 시작·목표 쌍의 sha256 |
-| `instance_fp` | `sha256(grid_fp + agents_fp_canon)` |
+| `map_file_sha256` | 지도 `.npy` 파일의 sha256 (원본 그대로) |
+| `grid_fp` | 0/1 격자 텍스트의 sha256 — dtype·`.npy` 헤더 차이와 무관 |
+| `grid_trim_fp`, `map_canon_fp` | 벽 테두리 제거 / 회전·반사 정규화 지도 fingerprint (**family 판정 전용**) |
+| `agents_ordered_fp` | agent id 순서대로 `[sr, sc, gr, gc]` 목록의 sha256 |
+| `agents_set_fp`, `agents_trim_*`, `agents_canon_*` | ID 무시 / 테두리 제거 / 회전·반사 정규화 시작·목표 (**family 판정 전용**) |
+| `instance_fp` | `sha256(grid_fp + ":" + agents_ordered_fp)` — **동일 instance 판정의 유일한 기준**. 저장하지 않고 위 두 필드로 계산한다(`registry.instance_fp`) |
 | `scenario_json_sha256` | 시나리오 JSON 파일 sha256 |
-| `generator` | 생성기 이름, 생성기 코드 commit SHA, 생성 seed, 생성 파라미터 전체 |
-| `structure_type` | `corridor` / `intersection` / `bottleneck` / 기타 |
-| `num_agents`, `grid_shape`, `free_cells` | 기본 속성 |
-| `solvability` | 8절 결과 (`CBS_SOLVED` / `CBS_TIMEOUT` / `CBS_NO_SOLUTION` / `CBS_ERROR`), CBS cost, 소요 시간, solver commit |
-| `il_compat` | 7절 검사 결과 |
-| `created_at`, `registered_by` | 날짜, 등록자 |
-| `notes` | 부분 중복, 제외 사유 등 |
+| `generator` | 생성기 이름, 버전, 생성 seed, 생성기 코드 sha256 (Development 16개는 `null`) |
+| `structure_type`, `structure_descriptor` | 구조 유형 / 생성 파라미터 (STRUCT_MATCH 판정용) |
+| `num_agents`, `grid_shape`, `free_cells`, `agent_ids_in_file`, `agent_id_matches_index` | 기본 속성 |
+| `relations` | 등록 시점의 다른 record와의 관계 |
+| `registered_at` | 날짜 |
+| 해결 가능성·IL 호환성 | 레지스트리에 넣지 않고 검사 출력 폴더(`outputs/pilot_checks_v1/<run>/pilot_checks.json` 등)에 기록한다. latency 같은 비결정 값이 append-only 레지스트리에 섞이지 않게 하기 위해서다 |
 
 규칙:
 - 좌표는 레지스트리에서 **내부 `(row, col)`**로 적는다(JSON은 `[x, y]`). 변환은 `scenario_loader`와 같은 방식으로 한다.
@@ -146,7 +154,7 @@
 
 ### 6.2 최소 다양성 (Validation·Test 각각에 적용, 제안)
 - 구조 유형: 복도(대피칸 있음), 교차로, 병목(문) 3종 모두 포함.
-- 한 family에서 나온 instance는 split 안 instance 수의 일정 비율 이하로 제한(예: family당 최대 3개). 한 지도에 시작·목표를 여러 개 두면 그만큼 독립성이 낮아지기 때문이다.
+- 한 family에서 나온 instance는 **split당 최대 3개**(`registry.FAMILY_CAP = 3`, 1차 적용값). 한 지도에 시작·목표를 여러 개 두면 그만큼 독립성이 낮아지기 때문이다. 신규 후보에만 적용하고, 기존 Development 16개(`fcorr01` 5개, `fbot01` 5개, `fint01` 4개)에는 소급하지 않는다.
 - agent 수: 최소 3단계(예: 2 / 4 / 6). 6 이상은 파일럿에서 CBS 시간을 보고 결정한다.
 - 지도 크기: Development 지도(3×3~11×11)보다 큰 것을 포함하되, 7절 IL 호환성 검사를 통과하는 범위로 제한한다.
 - 시작·목표 배치: 정면 충돌형, 직각 교차형, 같은 방향 행렬(convoy)형, 비대칭 흐름형을 섞는다.
@@ -181,20 +189,18 @@
 - 정규화: `(goal_dir - goal_mean) / goal_std`, `goal_mean ≈ (-0.042, 0.016)`, `goal_std ≈ (6.58, 2.57)` — `(row, col)` 순서.
 - 학습 명령: `train_navhint.py --npz real_v03_fd.npz --hint-mode flowdist --epochs 55`, best_val_acc 0.8255.
 
-### 7.2 모르는 것 [확인 필요]
-- 학습 데이터 `real_v03_fd.npz`는 Alpha 2로 옮겨지지 않았다(`training_data_migrated: false`).
-- **학습에 쓰인 지도 종류, 지도 크기, agent 수, 장애물 밀도, 시작·목표 분포는 확인되지 않았다.**
-- 학습 지도에 MovingAI 지도 또는 이번에 생성할 구조와 비슷한 지도가 있었는지 알 수 없다.
-- `goal_std`가 row 6.58, col 2.57로 비대칭인 이유도 알 수 없다. 이 값에서 학습 분포를 추측하지 않는다.
+### 7.2 확인한 것과 모르는 것 (2026-11-05 읽기 전용 조사)
+- 확인: 로컬 `../Alpha1_legacy/real_v03_fd.npz`(sha256 `425c3f2a…`, sample 45,730개)의 goal 평균·표준편차가 checkpoint MANIFEST 정규화값과 1.8e-7 이내로 같다. 즉 이 파일이 `cnn_navhint.pt`의 학습 데이터다.
+- 확인: `goal_std`의 row/col 비대칭은 `flow_step`이 거리가 같을 때 상·하·좌·우 순서로 고르기 때문이다(세로 성분만 49.7%, 가로 성분만 14.1%).
+- 확인: Alpha 1은 MovingAI 지도(empty-8-8, random-32-32-10/20, room-32-32-4, maze-32-32-2)로 평가하고 그 결과로 모델을 골랐다. 이 지도는 Test에 쓰지 않는다(쓴다면 `EXTERNAL_REF`).
+- **[확인 필요]** 학습 pool(`outputs/paths/{diverse,bigmap,dense}`)의 생성 조건·지도 목록·시나리오 수. pool이 로컬과 git 기록에 없고, npz에는 5×5 시야만 있어 지도를 복원할 수 없다.
 
-### 7.3 확인 절차
-1. **원본 확인**: Alpha 1 저장소(`qwedus/MAPF_2026_AlphaProject`, `analysis` 브랜치)와 Alpha 1 문서에서 `real_v03_fd.npz` 생성 방법과 사용 지도를 찾는다. 담당자에게 확인한다. 찾지 못하면 "미확인"으로 기록하고 MovingAI 등 외부 지도를 Test에 쓰지 않는다.
-2. **입력 형식 검사** (실행 없이 계산만): 각 후보 instance에서
-   - 모든 agent·모든 칸에서 BFS 거리가 유한한가(시작에서 목표로 갈 수 있는가),
-   - local grid가 5×5 시야와 지도 경계 패딩 규칙에 맞게 만들어지는가,
-   - 시작 위치의 `flowdist` 값을 정규화했을 때 z 값이 얼마인가.
-3. **분포 밖 입력 표시**: 시작 시점의 정규화된 goal 입력 |z|가 기준값(제안: 3)을 넘는 instance에 `il_compat=OUT_OF_RANGE`를 기록한다. 기준값은 승인 대상이다. 이 표시는 instance를 **빼는 기준이 아니라 기록**이며, 결과 보고 때 따로 집계한다. 빼려면 Test 생성 전에 규칙으로 정한다.
-4. 이 검사는 IL 정책을 실행하지 않고 입력만 계산하므로 Validation·Test 결과를 미리 보는 것이 아니다.
+### 7.3 확인 절차 (v1.1 — `src/data/il_compat.py`)
+1. **원본 확인**: 위 [확인 필요] 항목은 담당자에게 확인한다. 확인되지 않으면 MovingAI 등 외부 지도를 Test에 쓰지 않는다.
+2. **reference**: `scripts/build_il_input_reference.py`가 npz를 읽기 전용으로 열어 특성별 경험적 백분위수 0.5%·99.5%(`numpy.percentile`, linear)를 `registry/il_input_reference_v1.json`에 저장한다. 특성: `goal_row`, `goal_col`(flowdist), `wall_count`, `robot_count`, `other_goal_count`(5×5 시야 채널별 1의 개수). 같은 npz면 같은 바이트가 나온다.
+3. **검사** (정책 실행 없이 입력만 계산): 시작 상태의 각 agent 특성(`START`)과, 목표에 도달할 수 있는 모든 칸의 goal 입력 범위(`REACHABLE_RANGE`)를 [p0.5, p99.5]와 비교한다. 입력은 런타임 경로(`MAPFStepSimulator.reset`, `nav_hint.make_goal_dir`)로 만든다.
+4. **기록**: 벗어나면 `OOD_WARNING`과 항목을 기록한다. **자동 실패(`auto_fail`)는 하지 않는다.** 제외 규칙이 필요하면 Test 생성 전에 별도로 정하고 승인받는다. v1 초안의 "정규화 |z| > 3" 기준은 쓰지 않는다. 가로 성분의 표준편차가 작아서, 학습 분포 안에 있는 Development Corridor(가로 10칸)까지 범위 밖으로 표시하기 때문이다.
+5. 이 검사는 IL 정책을 실행하지 않고 입력만 계산하므로 Validation·Test 결과를 미리 보는 것이 아니다.
 
 ---
 
@@ -205,13 +211,14 @@
 - 실행 조건: `PYTHONHASHSEED` 고정, 순차 실행(동시 실행 금지 — cwd 전환 때문), clean solver.
 - 검사용 timeout은 실험용 CBS timeout(30 s)과 **따로** 둔다(제안: 120 s). 검사 결과 기록:
 
-| 결과 | 처리 |
+| 결과 (계획 이름 / 어댑터 `status`) | 처리 |
 |---|---|
-| `CBS_SOLVED` | 등록 가능. cost와 소요 시간 기록 |
-| `CBS_NO_SOLUTION` | 해결 불가. 성능 평가 instance에서 제외하고 레지스트리에 사유 기록 |
-| `CBS_TIMEOUT` | 해결 여부 **미확인**. 평가 instance에서 제외하고 따로 기록. 해결 불가로 세지 않는다 |
-| `CBS_ERROR` | 원인 확인 전까지 등록 보류 |
+| `CBS_SOLVED` / `success` | 등록 가능. cost와 소요 시간 기록 |
+| `CBS_NO_SOLUTION` / `no_solution` | 해결 불가. 성능 평가 instance에서 제외하고 사유 기록 |
+| `CBS_TIMEOUT` / `timeout` | 해결 여부 **미확인**. 평가 instance에서 제외하고 따로 기록. 해결 불가로 세지 않는다 |
+| `CBS_ERROR` / `invalid_path`·`input_error`·`solver_error` | 원인 확인 전까지 등록 보류 |
 
+- 구현: `scripts/check_pilot_instances.py --run-solver`가 기존 `CbsRuntimePlanner`(어댑터 무수정)로 instance당 1회 호출하고, 어댑터가 낸 `status`를 그대로 기록한다. 결과와 Solver 파일은 새 폴더 `outputs/pilot_checks_v1/<YYYYmmdd_HHMMSS>/`에 쓴다.
 - 출력 경로가 Path Guard(어댑터 내부 + `validate_path_guard`)를 통과해야 `CBS_SOLVED`로 인정한다.
 - 해결 가능성 검사에서 나온 CBS cost는 Pure CBS 결과로 보고하지 않는다. 검사용 기록이다.
 - 제외 비율이 높으면(예: 구조 유형별 20% 초과 — 제안) 생성 조건을 고친다. 고치는 것은 Test 생성 **전**에만 허용한다.
@@ -297,10 +304,10 @@ IL-only, Pure CBS, Safety-only, Global FULL, H3, H3_REARM. Selective는 구현 �
 
 1. Validation·Test instance 수 (제안: 45 / 75)와 구조·규모 단계 구성.
 2. 생성 파라미터 범위와 Validation·Test 범위 분리 방법, 생성 seed 범위.
-3. family당 최대 instance 수 (제안: 3).
+3. family당 최대 instance 수 (1차 적용값 3, 신규 후보만).
 4. agent 수 상한 (파일럿 CBS 시간 확인 후).
 5. IL 학습 데이터 확인 담당과 방법. 확인되지 않을 때 외부 지도(MovingAI) 사용 여부.
-6. IL 분포 밖 입력 기준값 (제안: |z| > 3)과 제외 여부.
+6. IL 분포 밖 입력: 백분위 [0.5%, 99.5%] 기준은 1차 적용. `OOD_WARNING`을 자동 실패로 할지는 미정.
 7. 해결 가능성 검사 timeout (제안: 120 s)과 제외 비율 기준 (제안: 20%).
 8. KI-1 변형 4개를 재검토할지, 계속 보류할지.
 9. Validation 후보값, 선택 순서, 선택 기준.

@@ -16,6 +16,18 @@
         "bottleneck"
       ]
     },
+    "fbot02": {
+      "count": 1,
+      "members": [
+        "PILOT_fbot02_001"
+      ],
+      "splits": {
+        "PILOT": 1
+      },
+      "structure_types": [
+        "bottleneck"
+      ]
+    },
     "fcorr01": {
       "count": 5,
       "members": [
@@ -27,6 +39,18 @@
       ],
       "splits": {
         "DEV": 5
+      },
+      "structure_types": [
+        "corridor"
+      ]
+    },
+    "fcorr02": {
+      "count": 1,
+      "members": [
+        "PILOT_fcorr02_001"
+      ],
+      "splits": {
+        "PILOT": 1
       },
       "structure_types": [
         "corridor"
@@ -70,22 +94,119 @@
       "structure_types": [
         "intersection"
       ]
+    },
+    "fint02": {
+      "count": 1,
+      "members": [
+        "PILOT_fint02_001"
+      ],
+      "splits": {
+        "PILOT": 1
+      },
+      "structure_types": [
+        "intersection"
+      ]
     }
   },
-  "family_count": 5,
+  "family_count": 8,
   "fp_schema": 1,
-  "instance_count": 16,
-  "instances_sha256": "0750f44ad4e6feb62571bc22dbb5f66ee7db2a9af813fe4ff162af7f89ee6e4c",
+  "instance_count": 19,
+  "instances_sha256": "945cfdd4376de0aa9ed111e21d4d95a9aae5fb7b548290c31261dbded056bcc9",
   "relation_counts": {
-    "SAME_MAP": 26
+    "SAME_MAP": 26,
+    "SUBMAP": 5
   },
-  "review_items": [],
+  "review_items": [
+    {
+      "a": "DEV_fcorr01_001",
+      "b": "PILOT_fint02_001",
+      "details": {
+        "larger_shape": [
+          9,
+          11
+        ],
+        "smaller_shape": [
+          2,
+          11
+        ]
+      },
+      "relation": "SUBMAP",
+      "review_decision": null
+    },
+    {
+      "a": "DEV_fcorr01_002",
+      "b": "PILOT_fint02_001",
+      "details": {
+        "larger_shape": [
+          9,
+          11
+        ],
+        "smaller_shape": [
+          2,
+          11
+        ]
+      },
+      "relation": "SUBMAP",
+      "review_decision": null
+    },
+    {
+      "a": "DEV_fcorr01_003",
+      "b": "PILOT_fint02_001",
+      "details": {
+        "larger_shape": [
+          9,
+          11
+        ],
+        "smaller_shape": [
+          2,
+          11
+        ]
+      },
+      "relation": "SUBMAP",
+      "review_decision": null
+    },
+    {
+      "a": "DEV_fcorr01_004",
+      "b": "PILOT_fint02_001",
+      "details": {
+        "larger_shape": [
+          9,
+          11
+        ],
+        "smaller_shape": [
+          2,
+          11
+        ]
+      },
+      "relation": "SUBMAP",
+      "review_decision": null
+    },
+    {
+      "a": "DEV_fcorr01_005",
+      "b": "PILOT_fint02_001",
+      "details": {
+        "larger_shape": [
+          9,
+          11
+        ],
+        "smaller_shape": [
+          2,
+          11
+        ]
+      },
+      "relation": "SUBMAP",
+      "review_decision": null
+    }
+  ],
+  "rules_version": 2,
   "split_counts": {
-    "DEV": 16
+    "DEV": 16,
+    "PILOT": 3
   },
   "thresholds": {
+    "FAMILY_CAP": 3,
     "NEAR_MAP_MAX_DIFF": 2,
     "SUBMAP_MIN_AREA": 9
   },
-  "unresolved_review_count": 0
+  "unresolved_review_count": 5
 }

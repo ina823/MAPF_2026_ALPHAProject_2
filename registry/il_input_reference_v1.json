@@ -1,0 +1,72 @@
+{
+  "features": {
+    "goal_col": {
+      "max": 44.0,
+      "mean": 0.015569647933522852,
+      "min": -38.0,
+      "p0.5": -12.0,
+      "p99.5": 13.0
+    },
+    "goal_row": {
+      "max": 46.0,
+      "mean": -0.041941832495079816,
+      "min": -42.0,
+      "p0.5": -22.0,
+      "p99.5": 25.0
+    },
+    "other_goal_count": {
+      "max": 7.0,
+      "mean": 0.6698666083533785,
+      "min": 0.0,
+      "p0.5": 0.0,
+      "p99.5": 4.0
+    },
+    "robot_count": {
+      "max": 7.0,
+      "mean": 0.7819374589984692,
+      "min": 0.0,
+      "p0.5": 0.0,
+      "p99.5": 4.0
+    },
+    "wall_count": {
+      "max": 20.0,
+      "mean": 4.522982724688388,
+      "min": 0.0,
+      "p0.5": 0.0,
+      "p99.5": 17.0
+    }
+  },
+  "hint_mode": "flowdist",
+  "normalization_check": {
+    "goal_mean": [
+      -0.041941832495079816,
+      0.015569647933522852
+    ],
+    "goal_std_ddof1": [
+      6.575143520340451,
+      2.5722345056554934
+    ],
+    "manifest_goal_mean": [
+      -0.04194183275103569,
+      0.015569647774100304
+    ],
+    "manifest_goal_std": [
+      6.575143337249756,
+      2.5722343921661377
+    ],
+    "max_abs_diff": 1.8309069549360402e-07
+  },
+  "note": "flow_step breaks distance ties in the order up, down, left, right, so vertical hints dominate the training set; goal_row and goal_col have different ranges by construction.",
+  "numpy_version": "2.5.4",
+  "percentile_method": "numpy.percentile(method='linear')",
+  "percentiles": [
+    0.5,
+    99.5
+  ],
+  "reference_schema": 1,
+  "source": {
+    "file": "real_v03_fd.npz",
+    "n_samples": 45730,
+    "sha256": "425c3f2ad08b5f814053750de075ac8a5bdc41196f1d68da1e5b140b3579323d"
+  }
+}

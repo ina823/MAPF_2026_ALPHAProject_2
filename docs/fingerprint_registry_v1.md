@@ -1,6 +1,6 @@
 # Fingerprint 레지스트리 v1 (`fp_schema = 1`)
 
-작성 2026-11-05. 상태: **1차 구현**. Development 16개만 등록했다. Validation·Test instance는 만들지 않았다.
+작성 2026-11-05. 상태: **1차 구현 + 판정 규칙 v2** (`RULES_VERSION = 2`). Development 16개와 PILOT 3개([`pilot_instances_v1.md`](pilot_instances_v1.md))를 등록했다. Validation·Test instance는 만들지 않았다.
 
 관련 문서: [`data_split_plan_v1.md`](data_split_plan_v1.md)(분리 계획), [`validation_test_split_v1.md`](validation_test_split_v1.md)(역할·family 규칙). 이 문서는 두 문서의 규칙을 바꾸지 않는다. `data_split_plan_v1.md` 3·5절의 판정 단계와 필드 이름을 이 문서의 기준으로 구체화했으며, 차이는 8절에 적었다.
 
@@ -14,7 +14,9 @@
 | `scripts/check_registry.py` | 레지스트리와 원본 파일 대조 (읽기 전용) |
 | `registry/instances_v1.jsonl` | instance당 1줄 |
 | `registry/families_v1.json` | family별 개수, 관계 수, REVIEW 항목 (instances에서 다시 만들 수 있는 요약) |
-| `tests/test_data_fingerprint.py`, `tests/test_data_registry.py`, `tests/test_register_dev_scenarios.py` | 단위·통합 테스트 |
+| `src/data/il_compat.py`, `scripts/build_il_input_reference.py`, `registry/il_input_reference_v1.json` | IL 입력 분포 reference와 OOD 검사 (8a절) |
+| `src/data/generator.py`, `scripts/generate_pilot_instances.py`, `scripts/check_pilot_instances.py` | PILOT 생성·검사 ([`pilot_instances_v1.md`](pilot_instances_v1.md)) |
+| `tests/test_data_fingerprint.py`, `tests/test_data_registry.py`, `tests/test_register_dev_scenarios.py`, `tests/test_data_il_compat.py`, `tests/test_data_generator.py`, `tests/test_generate_pilot.py` | 단위·통합 테스트 |
 
 ## 2. Fingerprint 계산 규칙 (`fp_schema = 1`)
 
@@ -65,11 +67,15 @@ start와 goal은 쌍으로 묶여 있어, 같은 칸들이라도 짝이 바뀌�
 
 | 결정 | 조건 |
 |---|---|
-| REJECT | 유효하지 않은 instance · 같은 파일(경로 또는 JSON sha256)이 이미 등록됨(같은 split: `ALREADY_REGISTERED`, 다른 split: `SPLIT_CHANGE`) · 어떤 record와든 `EXACT`(`DUPLICATE_INSTANCE`) · 다른 도메인 record와 CONFIRMED 또는 RELATED 관계(`FAMILY_LEAK`) · 서로 다른 두 family와 관련(`FAMILY_CONFLICT`) · VAL/TEST인데 `agent_id` ≠ 순서 |
+| REJECT | 유효하지 않은 instance · 같은 파일(경로 또는 JSON sha256)이 이미 등록됨(같은 split: `ALREADY_REGISTERED`, 다른 split: `SPLIT_CHANGE`) · 어떤 record와든 `EXACT`(`DUPLICATE_INSTANCE`) · 다른 도메인 record와 CONFIRMED 또는 RELATED 관계(`FAMILY_LEAK`) · 서로 다른 두 family와 관련(`FAMILY_CONFLICT`) · VAL/TEST인데 `agent_id` ≠ 순서 · **TEST인데 다른 도메인 record와 `STRUCT_MATCH`**(`STRUCT_MATCH_TEST_FORBIDDEN`, REVIEW 판정으로도 풀리지 않음) · **이미 같은 split에 `FAMILY_CAP`=3개가 있는 family에 합류**(`FAMILY_CAP`, 신규 후보만) |
 | HOLD | 미해결 REVIEW 관계가 있고, 대상이 VAL/TEST이거나 상대 record가 다른 도메인 (`UNRESOLVED_REVIEW`). 등록하지 않는다 |
 | ACCEPT | 그 외. 관련 family에 들어가거나 새 family를 만든다 |
 
-REVIEW 판정은 `ReviewBook.add(key_a, key_b, relation, RELATED|UNRELATED, reviewer, reason)`으로 넣는다. key는 `instance_key` = `grid_fp:agents_ordered_fp`이며, 등록 전 후보도 판정할 수 있다. 1차 구현에서는 판정을 저장하는 파일을 만들지 않았다(REVIEW 0건). 파일 형식은 첫 REVIEW가 생길 때 정한다.
+- **instance 판정과 family 판정의 분리**: 동일 instance의 유일한 기준은 `registry.instance_fp(rec) = sha256(grid_fp + ":" + agents_ordered_fp)`이다(EXACT와 같다). `agents_set_fp`, `grid_trim_fp`, `map_canon_fp`, `agents_canon_*`는 관계·family 판정에만 쓴다.
+- **family 상한**: `FAMILY_CAP = 3`은 `evaluate()`에서 신규 후보에만 적용한다. Development 16개 재등록(`register_dev_scenarios.build_dev_registry`)은 `apply_family_cap=False`로 상한을 소급하지 않는다. `check_registry`는 DEV가 아닌 split에서만 상한 초과를 오류로 본다.
+- **추가만 허용**: `Registry.append_to_file()`은 기존 줄이 바이트 단위로 그대로이고, 파일이 불러온 시점과 같을 때만 새 record를 덧붙인다.
+
+REVIEW 판정은 `ReviewBook.add(key_a, key_b, relation, RELATED|UNRELATED, reviewer, reason)`으로 넣는다. key는 `instance_fp`이며, 등록 전 후보도 판정할 수 있다. 판정을 저장하는 파일은 아직 없다. 현재 REVIEW 5건(PILOT-3, [`pilot_instances_v1.md`](pilot_instances_v1.md))은 모두 미해결이다. 파일 형식은 첫 판정을 내릴 때 정한다.
 
 ## 5. 안전한 기록
 
@@ -105,15 +111,20 @@ REVIEW 판정은 `ReviewBook.add(key_a, key_b, relation, RELATED|UNRELATED, revi
 - 지도 자체가 대칭인 경우: intersection·cycle ring·empty는 8가지 변환이 모두 같은 정규형을 낸다. corridor는 2가지, bottleneck은 4가지다.
 - `dev_role`과 `usage_status`는 `data_split_plan_v1.md` 1절 표를 옮겼다. KI-1 변형 4개는 `variant_ki1` / `HOLD`다.
 
-## 8. `data_split_plan_v1.md`와의 차이 (규칙 변경 아님, 구체화)
+## 8. `data_split_plan_v1.md`와의 관계
 
-- 계획 5절의 `instance_fp = sha256(grid_fp + agents_fp_canon)`은 회전·반사와 ID 순서를 정규화한 agent 값을 써서, 엄격한 instance 판정과 family 판정이 섞인다. 이 구현은 instance 판정을 `EXACT`(원래 격자 + ID 순서)로 하고, 정규화된 값은 관계 판정에만 쓴다.
-- 계획 3.2절 D2("정규화 지도가 같으면 같은 family")와 D4는 `SAME_MAP`/`SYMMETRY_EQUIV`로, D3("잘라 내거나 덧붙인 지도")는 `TRIM_EQUIV`(벽 테두리)와 `SUBMAP`(REVIEW)으로 나누었다. D5는 `STRUCT_MATCH`(REVIEW)다. 계획은 D3를 "같은 family"로 적었지만, 여기서는 확인 전까지 REVIEW로 두고 VAL/TEST 등록을 보류한다. 계획보다 엄격한 쪽이다.
-- 계획 문서 본문을 개정할지는 승인 대상이다.
+`data_split_plan_v1.md` v1.1(2026-11-05)에서 3.2절 판정표, 5절 `instance_fp`, 6.2절 family 상한, 7절 IL 입력 기준을 이 구현에 맞게 개정했다. 두 문서와 코드 사이에 남은 차이는 없다.
+
+## 8a. IL 입력 분포 reference
+
+- `scripts/build_il_input_reference.py`가 `../Alpha1_legacy/real_v03_fd.npz`를 읽기 전용(`allow_pickle=False`)으로 열어 `registry/il_input_reference_v1.json`을 만든다. 파일이 이미 있으면 거부한다. 학습 통계와 checkpoint 정규화값의 차이가 1e-5를 넘어도 거부한다(실제 1.83e-7).
+- 특성별 경험적 백분위수 [0.5%, 99.5%]: `goal_row` [-22, 25], `goal_col` [-12, 13], `wall_count` [0, 17], `robot_count` [0, 4], `other_goal_count` [0, 4].
+- `src/data/il_compat.check_instance()`는 시작 상태(`START`)와 도달 가능한 칸 전체의 goal 입력 범위(`REACHABLE_RANGE`)를 비교해 `OOD_WARNING`을 기록한다. `auto_fail`은 항상 False이며, 자동 실패 규칙은 미정이다.
 
 ## 9. 한계와 승인 필요 사항
 
-- `NEAR_MAP_MAX_DIFF = 2`, `SUBMAP_MIN_AREA = 9`는 1차 값이다(승인 필요). 값이 바뀌면 `fp_schema`를 올리고 레지스트리를 다시 계산한다.
+- `NEAR_MAP_MAX_DIFF = 2`, `SUBMAP_MIN_AREA = 9`, `FAMILY_CAP = 3`은 1차 값이다(승인 필요).
+- split과 instance_id를 **함께** 고친 record는 불러올 때 검출되지 않는다. git 변경 내역과, 동결 시점에 적어 둔 레지스트리 sha256으로 막는다. 값이 바뀌면 `fp_schema`를 올리고 레지스트리를 다시 계산한다.
 - NEAR_MAP은 테두리를 제거한 shape이 같을 때만 비교한다. 크기가 다르면서 거의 같은 지도는 SUBMAP으로만 잡힌다.
 - `structure_descriptor`는 생성기가 아직 없어 정의하지 않았다.
 - Alpha 1 지도(`EXTERNAL_REF`)는 등록하지 않았다(별도 승인).
