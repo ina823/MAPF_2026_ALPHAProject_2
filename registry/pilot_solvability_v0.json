@@ -1,0 +1,69 @@
+{
+  "gate_version": 0,
+  "note": "cbs = exactly what the atb033 CBS adapter returned (scripts/check_pilot_instances.py --run-solver). other_methods = evidence from anything that is not that CBS; it never changes cbs.status. Derived values (cbs_solved, solution_existence, witness_evidence) are computed by src/data/quality_gate.py and are not stored here.",
+  "records": [
+    {
+      "instance_id": "PILOT_fcorr02_001",
+      "instance_fp": "681803d44989b632edb93431e1c45ea6c8d33246e42c47d2bffefb4a8b42cc8b",
+      "cbs": {
+        "status": "success",
+        "timeout_sec": 120,
+        "latency_sec": 1.082,
+        "path_guard_ok": true,
+        "sum_of_path_lengths": 57,
+        "makespan": 19,
+        "solver_commit": "89f69e11944b172e11c3bcbbecc57344eaa4be9c",
+        "pythonhashseed": "0",
+        "source_file": "outputs/pilot_checks_v1/20261105_173041/pilot_checks.json",
+        "source_sha256": "a0ac92812ab15637f988bff8b33878256784ba46b289469dcf7685c5a4157d3d",
+        "source_entry": "pilot_corridor_bays_l15"
+      },
+      "other_methods": []
+    },
+    {
+      "instance_id": "PILOT_fbot02_001",
+      "instance_fp": "84215a9cb6d5bc3ecbb12bd7b9e6e207ff5f8fefe17d4a8797f5ddf880f2693a",
+      "cbs": {
+        "status": "timeout",
+        "timeout_sec": 120,
+        "latency_sec": 120.07,
+        "solver_commit": "89f69e11944b172e11c3bcbbecc57344eaa4be9c",
+        "pythonhashseed": "0",
+        "source_file": "outputs/pilot_checks_v1/20261105_173041/pilot_checks.json",
+        "source_sha256": "a0ac92812ab15637f988bff8b33878256784ba46b289469dcf7685c5a4157d3d",
+        "source_entry": "pilot_rooms_door_6x14"
+      },
+      "other_methods": [
+        {
+          "method": "prioritized_spacetime_planner",
+          "result": "FOUND_VALID_PLAN",
+          "path_guard_ok": true,
+          "sum_of_path_lengths": 73,
+          "makespan": 21,
+          "settings": "fixed priority order (0, 1, 2, 3), horizon T=80, vertex + edge reservations, parked agents block their goal",
+          "lower_bounds": {"sum_of_path_lengths": 61, "makespan": 17},
+          "archived": false,
+          "source": "2026-11-06 read-only investigation; in-memory run with alpha2_test_env, plan checked with validate_path_guard, no plan file written"
+        }
+      ]
+    },
+    {
+      "instance_id": "PILOT_fint02_001",
+      "instance_fp": "051ff922c6f44e8053bb96b2756039f50155b5c01f71bad7f7f3cfb66a5d6767",
+      "cbs": {
+        "status": "success",
+        "timeout_sec": 120,
+        "latency_sec": 0.395,
+        "path_guard_ok": true,
+        "sum_of_path_lengths": 27,
+        "makespan": 9,
+        "solver_commit": "89f69e11944b172e11c3bcbbecc57344eaa4be9c",
+        "pythonhashseed": "0",
+        "source_file": "outputs/pilot_checks_v1/20261105_173041/pilot_checks.json",
+        "source_sha256": "a0ac92812ab15637f988bff8b33878256784ba46b289469dcf7685c5a4157d3d",
+        "source_entry": "pilot_crossing_9x11"
+      },
+      "other_methods": []
+    }
+  ]
+}

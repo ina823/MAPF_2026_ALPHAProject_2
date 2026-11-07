@@ -72,6 +72,7 @@ reference: `registry/il_input_reference_v1.json` (학습 npz sha256 `425c3f2a…
 | `OOD_WARNING` 3건 (PILOT 3개 모두) | **미해결** — 기록만 함, `auto_fail = False` | 자동 실패 규칙을 둘지. 폭 1 통로는 Development에서도 OOD다 |
 
 이 항목들은 Validation·Test 생성 전에 결정한다. PILOT 결과로 정책 파라미터를 고르지 않는다.
+감사 기록(REVIEW 원장 HOLD, OOD 분류, CBS/별도 근거 분리)과 검사 방법은 [`pilot_quality_gate_v0.md`](pilot_quality_gate_v0.md)에 있다(판정은 여전히 미해결).
 
 ## 6. 다시 확인하는 방법
 
