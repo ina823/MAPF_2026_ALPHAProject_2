@@ -1,0 +1,190 @@
+{
+  "prereg_schema": 1,
+  "title": "PILOT v2 candidates: pre-registration (written before any candidate was generated or checked)",
+  "recorded_at": "2026-11-08",
+  "recorded_by": "Claude Code session, candidates approved by ina823",
+  "base_commit": "a28eb2e034a1fd1e2f437c2ffe45992c576af282",
+  "split_intent": "PILOT (development side); candidates are NOT registered in registry/instances_v1.jsonl by this step",
+  "predictions_status": "hand-derived, not computed by running any code on these candidates",
+  "selection_rule": {
+    "no_replacement": "No candidate is replaced, dropped or re-seeded because of a result.",
+    "grade_is_fixed": "NORMAL/STRESS never changes after this file; a missed target is recorded as target_met=false.",
+    "failures_are_kept": "Failed or flagged candidates keep their full check record.",
+    "cbs": "CBS is not run in this step."
+  },
+  "check_criteria": {
+    "validity": "Every start and goal is inside the grid on a free cell; starts distinct; goals distinct.",
+    "bfs_reachability": "bfs_dist(grid, goal)[start] >= 0 for every agent.",
+    "agent_id": "JSON agent_id equals list index for every agent.",
+    "coordinates": "JSON [x, y] read through scenario_loader equals the generator's internal (row, col).",
+    "seed_reproducibility": "Two generations with the same seed are byte-identical, also across PYTHONHASHSEED 0 and 1.",
+    "il_ood": "il_compat.check_instance + quality_gate.classify_ood against registry/il_input_reference_v1.json; auto_fail stays False.",
+    "existing_relations": "registry.relate against all 19 records (fingerprint, family, SUBMAP, NEAR_MAP, STRUCT_MATCH) plus Registry.evaluate(candidate, 'PILOT') and quality_gate.independence_check, in memory only.",
+    "candidate_relations": "registry.relate and instance_fp equality for all 3 candidate pairs.",
+    "independence": "No relation, automatic or manual, is approved as independent here: every automatic relation and every manual similarity is recorded as HOLD with final_decision null.",
+    "width1_cell_definition": "A free cell whose two up/down neighbours are both wall-or-outside, or whose two left/right neighbours are both wall-or-outside.",
+    "normal_target": "ood_class == IN_RANGE AND width1_cells == 0 AND num_agents <= 4.",
+    "stress_target": "width1_cells > 0 AND max |goal_col| over start and reachable hints >= 13 AND num_agents == 6."
+  },
+  "candidates": [
+    {
+      "candidate_id": "PV2C-001",
+      "slug": "pilot2_staggered_blocks_9x9",
+      "grade": "NORMAL",
+      "seed": 21,
+      "builder": "staggered_blocks",
+      "structure_type": "open_obstacles",
+      "params": {
+        "height": 9,
+        "width": 9,
+        "block_h": 2,
+        "block_w": 2,
+        "block_tops": [[1, 1], [2, 5], [5, 2], [6, 6]],
+        "n_east": 2,
+        "zones": {
+          "west": {"rows": [3, 4], "cols": [0, 1]},
+          "east": {"rows": [4, 5], "cols": [7, 8]},
+          "north": {"rows": [0, 0], "cols": [3, 5]},
+          "south": {"rows": [8, 8], "cols": [3, 5]}
+        }
+      },
+      "agent_order": ["W->E", "W->E", "N->S", "S->N"],
+      "num_agents": 4,
+      "free_cells": 65,
+      "grid_rows": [
+        "000000000",
+        "011000000",
+        "011001100",
+        "000001100",
+        "000000000",
+        "001100000",
+        "001100110",
+        "000000110",
+        "000000000"
+      ],
+      "predicted": {
+        "ood_class": "IN_RANGE",
+        "causes": [],
+        "width1_cells": 8,
+        "width1_cell_list": [[0, 1], [0, 2], [1, 0], [2, 0], [6, 8], [7, 8], [8, 6], [8, 7]],
+        "target_met": false,
+        "target_note": "Blocks at (1,1) and (6,6) leave 2-cell gaps to the map edge. These count as width-1 under the strict definition above, so this NORMAL candidate is predicted to miss its target even if IN_RANGE. The definition is kept strict and the approved map is not changed.",
+        "automatic_relations": []
+      }
+    },
+    {
+      "candidate_id": "PV2C-002",
+      "slug": "pilot2_loop_w2_7x9",
+      "grade": "NORMAL",
+      "seed": 22,
+      "builder": "loop_corridor",
+      "structure_type": "loop",
+      "params": {
+        "height": 7,
+        "width": 9,
+        "band": 2,
+        "zones": {
+          "north": {"rows": [0, 1], "cols": [3, 5]},
+          "south": {"rows": [5, 6], "cols": [3, 5]},
+          "west": {"rows": [2, 4], "cols": [0, 1]},
+          "east": {"rows": [2, 4], "cols": [7, 8]}
+        }
+      },
+      "agent_order": ["N->S", "S->N", "W->E", "E->W"],
+      "num_agents": 4,
+      "free_cells": 48,
+      "grid_rows": [
+        "000000000",
+        "000000000",
+        "001111100",
+        "001111100",
+        "001111100",
+        "000000000",
+        "000000000"
+      ],
+      "predicted": {
+        "ood_class": "IN_RANGE",
+        "causes": [],
+        "width1_cells": 0,
+        "target_met": true,
+        "automatic_relations": []
+      }
+    },
+    {
+      "candidate_id": "PV2C-003",
+      "slug": "pilot2_hub_spokes_19x19",
+      "grade": "STRESS",
+      "seed": 23,
+      "builder": "hub_spokes",
+      "structure_type": "hub_spokes",
+      "params": {
+        "hub_size": 3,
+        "arm_len": 5,
+        "chamber_depth": 3,
+        "chamber_width": 5,
+        "n_south": 2,
+        "n_east": 2
+      },
+      "agent_order": ["N->S", "N->S", "W->E", "W->E", "S->N (fixed start, south arm middle)", "E->W (fixed start, east arm middle)"],
+      "fixed_starts": {"S->N": [13, 9], "E->W": [9, 13]},
+      "num_agents": 6,
+      "free_cells": 89,
+      "grid_rows": [
+        "1111111000001111111",
+        "1111111000001111111",
+        "1111111000001111111",
+        "1111111110111111111",
+        "1111111110111111111",
+        "1111111110111111111",
+        "1111111110111111111",
+        "0001111110111111000",
+        "0001111100011111000",
+        "0000000000000000000",
+        "0001111100011111000",
+        "0001111110111111000",
+        "1111111110111111111",
+        "1111111110111111111",
+        "1111111110111111111",
+        "1111111110111111111",
+        "1111111000001111111",
+        "1111111000001111111",
+        "1111111000001111111"
+      ],
+      "predicted": {
+        "ood_class": "OOD_TAIL",
+        "causes": ["DENSE_WALL_VIEW", "LONG_HORIZONTAL_GOAL_HINT"],
+        "width1_cells_positive": true,
+        "max_abs_goal_col_at_least": 13,
+        "wall_count_at_fixed_starts": 20,
+        "target_met": true,
+        "automatic_relations": []
+      }
+    }
+  ],
+  "manual_similarity_holds": [
+    {
+      "candidate_id": "PV2C-001",
+      "other_scope": "instance",
+      "other": ["DEV_femp01_001"],
+      "basis": "Both are open rooms; PV2C-001 adds four 2x2 wall blocks."
+    },
+    {
+      "candidate_id": "PV2C-002",
+      "other_scope": "instance",
+      "other": ["DEV_fcyc01_001"],
+      "basis": "Both are a free ring around a central wall (width 2 around 3x5 vs width 1 around 1x1)."
+    },
+    {
+      "candidate_id": "PV2C-003",
+      "other_scope": "family",
+      "other": ["fint01", "fint02"],
+      "basis": "Cross-shaped traffic meeting at a centre, as in the intersection families."
+    },
+    {
+      "candidate_id": "PV2C-003",
+      "other_scope": "family",
+      "other": ["fbot01", "fbot02"],
+      "basis": "Rooms joined through width-1 passages, as in the bottleneck families."
+    }
+  ]
+}

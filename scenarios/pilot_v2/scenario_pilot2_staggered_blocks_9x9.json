@@ -1,0 +1,130 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        8,
+        4
+      ],
+      "start": [
+        0,
+        3
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        8,
+        5
+      ],
+      "start": [
+        1,
+        4
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        4,
+        8
+      ],
+      "start": [
+        3,
+        0
+      ]
+    },
+    {
+      "agent_id": 3,
+      "goal": [
+        5,
+        0
+      ],
+      "start": [
+        5,
+        8
+      ]
+    }
+  ],
+  "generator": {
+    "base_generator_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "candidate_id": "PV2C-001",
+    "code_sha256": "b60e272f6ad90552e01efc06da48f81b4bffa478e16c3eec61c60d8de6450951",
+    "descriptor": {
+      "block_h": 2,
+      "block_tops": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          5
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          6,
+          6
+        ]
+      ],
+      "block_w": 2,
+      "generator": "alpha2_structured_v2",
+      "generator_version": 2,
+      "height": 9,
+      "n_east": 2,
+      "structure": "staggered_blocks",
+      "width": 9,
+      "zones": {
+        "east": {
+          "cols": [
+            7,
+            8
+          ],
+          "rows": [
+            4,
+            5
+          ]
+        },
+        "north": {
+          "cols": [
+            3,
+            5
+          ],
+          "rows": [
+            0,
+            0
+          ]
+        },
+        "south": {
+          "cols": [
+            3,
+            5
+          ],
+          "rows": [
+            8,
+            8
+          ]
+        },
+        "west": {
+          "cols": [
+            0,
+            1
+          ],
+          "rows": [
+            3,
+            4
+          ]
+        }
+      }
+    },
+    "name": "alpha2_structured_v2",
+    "prereg_sha256": "67a748efad4d435acb3a69bf61ed8d6a6e018de5f6e61fdf235b29059ec778af",
+    "seed": 21,
+    "version": 2
+  },
+  "map_file": "map_pilot2_staggered_blocks_9x9.npy",
+  "map_id": "pilot2_staggered_blocks_9x9",
+  "scenario_id": "scen_pilot2_staggered_blocks_9x9"
+}

@@ -1,0 +1,93 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        10,
+        16
+      ],
+      "start": [
+        7,
+        0
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        10,
+        17
+      ],
+      "start": [
+        7,
+        2
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        16,
+        10
+      ],
+      "start": [
+        1,
+        7
+      ]
+    },
+    {
+      "agent_id": 3,
+      "goal": [
+        18,
+        11
+      ],
+      "start": [
+        2,
+        9
+      ]
+    },
+    {
+      "agent_id": 4,
+      "goal": [
+        8,
+        1
+      ],
+      "start": [
+        9,
+        13
+      ]
+    },
+    {
+      "agent_id": 5,
+      "goal": [
+        0,
+        8
+      ],
+      "start": [
+        13,
+        9
+      ]
+    }
+  ],
+  "generator": {
+    "base_generator_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "candidate_id": "PV2C-003",
+    "code_sha256": "b60e272f6ad90552e01efc06da48f81b4bffa478e16c3eec61c60d8de6450951",
+    "descriptor": {
+      "arm_len": 5,
+      "chamber_depth": 3,
+      "chamber_width": 5,
+      "generator": "alpha2_structured_v2",
+      "generator_version": 2,
+      "hub_size": 3,
+      "n_east": 2,
+      "n_south": 2,
+      "structure": "hub_spokes"
+    },
+    "name": "alpha2_structured_v2",
+    "prereg_sha256": "67a748efad4d435acb3a69bf61ed8d6a6e018de5f6e61fdf235b29059ec778af",
+    "seed": 23,
+    "version": 2
+  },
+  "map_file": "map_pilot2_hub_spokes_19x19.npy",
+  "map_id": "pilot2_hub_spokes_19x19",
+  "scenario_id": "scen_pilot2_hub_spokes_19x19"
+}

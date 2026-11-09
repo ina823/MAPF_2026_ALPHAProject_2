@@ -1,0 +1,110 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        3,
+        5
+      ],
+      "start": [
+        5,
+        0
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        3,
+        1
+      ],
+      "start": [
+        5,
+        6
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        7,
+        2
+      ],
+      "start": [
+        1,
+        2
+      ]
+    },
+    {
+      "agent_id": 3,
+      "goal": [
+        1,
+        3
+      ],
+      "start": [
+        7,
+        3
+      ]
+    }
+  ],
+  "generator": {
+    "base_generator_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "candidate_id": "PV2C-002",
+    "code_sha256": "b60e272f6ad90552e01efc06da48f81b4bffa478e16c3eec61c60d8de6450951",
+    "descriptor": {
+      "band": 2,
+      "generator": "alpha2_structured_v2",
+      "generator_version": 2,
+      "height": 7,
+      "structure": "loop_corridor",
+      "width": 9,
+      "zones": {
+        "east": {
+          "cols": [
+            7,
+            8
+          ],
+          "rows": [
+            2,
+            4
+          ]
+        },
+        "north": {
+          "cols": [
+            3,
+            5
+          ],
+          "rows": [
+            0,
+            1
+          ]
+        },
+        "south": {
+          "cols": [
+            3,
+            5
+          ],
+          "rows": [
+            5,
+            6
+          ]
+        },
+        "west": {
+          "cols": [
+            0,
+            1
+          ],
+          "rows": [
+            2,
+            4
+          ]
+        }
+      }
+    },
+    "name": "alpha2_structured_v2",
+    "prereg_sha256": "67a748efad4d435acb3a69bf61ed8d6a6e018de5f6e61fdf235b29059ec778af",
+    "seed": 22,
+    "version": 2
+  },
+  "map_file": "map_pilot2_loop_w2_7x9.npy",
+  "map_id": "pilot2_loop_w2_7x9",
+  "scenario_id": "scen_pilot2_loop_w2_7x9"
+}
