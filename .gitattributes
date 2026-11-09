@@ -5,3 +5,9 @@
 *.npy  binary
 *.npz  binary
 *.png  binary
+
+# Registered byte-for-byte (scenario_json_sha256 in registry/instances_v1.jsonl): keep CRLF as is.
+scenarios/controlled/scenario_bottleneck_n4.json   -text
+scenarios/controlled/scenario_corridor_bay_n2.json -text
+scenarios/controlled/scenario_cycle_ring_n4.json   -text
+scenarios/controlled/scenario_intersection_n2.json -text
