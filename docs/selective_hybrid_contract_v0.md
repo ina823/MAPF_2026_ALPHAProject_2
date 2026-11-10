@@ -1,9 +1,9 @@
 # Selective Hybrid 최소 API 계약 v0 (초안)
 
 - 상태: **DRAFT — 윤지와 합의 전. 승인된 구현 명세가 아니다.** 이 문서의 어떤 값도 운영 정책으로 확정되지 않았다. [제안] 항목은 합의 전까지 구현 근거로 쓰지 않는다.
-- 현재 코드 상태 [확인]: WFG는 **후보 순수 함수만** 있다(`src/hybrid/wfg.py`의 `build_wfg`, 규칙 `wfg-candidate-v0`, 3.2.1절). Runner, Monitor, CBS 어디에서도 호출하지 않으며 Selective Runner에 연결되지 않았다. **`group_selector`와 Selective Runner는 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이다.
+- 현재 코드 상태 [확인]: WFG는 **후보 순수 함수만** 있다(`src/hybrid/wfg.py`의 `build_wfg`, 규칙 `wfg-candidate-v0`, 3.2.1절). Selective 의사결정 순수 모듈(`src/hybrid/selective_decision.py`의 `decide_selective`, 규칙 `selective-decision-v0`, 3.3.1절)도 있다. 이 모듈은 **v0에서 항상 `GLOBAL`을 반환한다.** 두 모듈 모두 Runner, Monitor, CBS 어디에서도 호출하지 않으며 Selective Runner에 연결되지 않았다. **`group_selector`, Selective Runner, 그룹 단위 CBS 실행은 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이다.
 - 작성 기준: 브랜치 `feature/ina-corridor-e2e-v0`, HEAD `c635276`, 2026-11-10
-- 범위: 계약(인터페이스·불변식)과 DEV 로그 기반 입력 검증 설계를 다룬다. 이후 WFG 후보 순수 함수와 단위 테스트(`tests/test_wfg.py`)가 추가되었다. Selective Runner는 만들지 않았다.
+- 범위: 계약(인터페이스·불변식)과 DEV 로그 기반 입력 검증 설계를 다룬다. 이후 WFG 후보 순수 함수와 단위 테스트(`tests/test_wfg.py`), Selective 의사결정 순수 모듈과 Mock 테스트(`tests/test_selective_decision.py`)가 추가되었다. Selective Runner는 만들지 않았다.
 - 표기 규칙
   - **[확인]** 코드나 저장된 로그에서 직접 읽은 사실 (파일·줄 근거 병기)
   - **[추정]** 원본 로그·코드에 없는 내용을 추론한 것
@@ -52,6 +52,7 @@
 |---|---|---|
 | DeadlockMonitor (`src/common/deadlock_monitor.py`) | 전체 joint-state 반복(FULL) Trigger, `blocking_type`, persistent_conflict / no_progress 관찰, `rearm()` | Trigger-Partial(부분 집합 반복), 그룹 정보 출력, Coordination-stall 라벨 |
 | WFG | — | **런타임 연결 없음.** 후보 순수 함수 `build_wfg`(`src/hybrid/wfg.py`, 3.2.1절)만 있고 어떤 Runner도 호출하지 않는다. `common_runner.NOT_IMPLEMENTED = ("SELECTIVE_HYBRID", "SELECTIVE_WFG", "WFG")`이고, 이 메서드는 실행 전에 거부된다 (`src/compare/common_runner.py:26,70`) |
+| Selective 의사결정 | 순수 함수 `decide_selective` (`src/hybrid/selective_decision.py`, 3.3.1절). 항상 `route="GLOBAL"`, 부분 그룹은 후보로만 기록 | **런타임 연결 없음.** Selective 실행 경로(route) 자체가 없다 |
 | `group_selector` | — | **파라미터 자체가 없다.** `src/`, `scripts/`, `tests/` 어디에도 정의가 없고 grep 결과 0건이다. 3.8절의 "None 보존"은 새로 도입할 때의 계약이다. |
 | Global Hybrid Runner (`src/hybrid/global_hybrid.py`) | IL→TRIGGER→CBS_REQUEST→CBS_EXEC→IL_RESUME/SAFE_STOP, h_exec, rearm 모드(호출 수, 시간 예산, cooldown, same-state) | 부분 집합 CBS 호출, 그룹 밖 Agent 행동 정책, L0/L1/G 사다리 |
 | CBS 경로 (`run_cbs_runtime` → `replan_with_status` → `replan` → `CBSAdapter`) | 넘겨준 Agent 집합만으로 CBS 호출(부분 집합 입력 자체는 형식상 가능), ID 복원, 6종 status | 그룹 밖 Agent를 **시간 의존** 장애물·예약으로 넘기는 입력 경로 |
@@ -136,6 +137,29 @@ SAFE_STOP(reason = 마지막 실패 사유)
 - **G**: 전체 Agent. 기존 Global Hybrid의 CBS 요청과 **같은 입력**이어야 한다(회귀 기준).
 - **SAFE_STOP**: G까지 실패했거나 예산이 소진된 경우. 기존 SAFE_STOP 의미(이후 이동 없음, I-4)를 그대로 쓴다.
 - 각 레벨의 실패 사유(`CBS_*`, `VALIDATOR_REJECT:*`, `SELECTIVE_*`)는 모두 기록한다.
+
+#### 3.3.1 현재 의사결정 구현 `selective-decision-v0` (DRAFT)
+
+`decide_selective(agent_ids, positions, goals, wfg, candidate_paths=None) -> SelectiveDecision`은 위 사다리 **이전**에 "Selective를 고려할 수 있는가"만 판정하는 순수 함수다. CBS를 호출하지 않으며 런타임에 연결되지 않았다.
+
+- **v0는 모든 입력에 대해 `route="GLOBAL"`을 반환한다.** 이때 GLOBAL은 기존 Global Hybrid의 전체 Agent CBS_REQUEST를 지금처럼 진행한다는 뜻이며, 기존 관문(I-2/I-3, recall, boundary, Path Guard, SAFE_STOP)은 바뀌지 않는다.
+
+  | `reason` | 조건 | `fallback` |
+  |---|---|---|
+  | `FULL_GROUP` | 그룹 하나가 전체 Agent | False (Global이 원래 경로) |
+  | `NO_GROUP` | WFG 그룹 없음 | True |
+  | `SELECTIVE_CANDIDATE_BLOCKED` | 일부 Agent 그룹 또는 복수 그룹. 후보로만 표시하고 `blockers`(P1~P5)와 `findings`를 기록 | True |
+  | `INSUFFICIENT_INPUT:<원인>` / `INVALID_INPUT:<원인>` / `INVALID_CANDIDATE_PATHS:<원인>` | 입력 누락 또는 모순. Selective를 평가하지 않음 | True |
+
+- `blockers`는 P1~P5를 나타내는 **고정 상수**다. 호출자가 정책 합의 전에 이를 끄고 Selective를 켤 수 없도록 매개변수로 두지 않았다.
+- `findings`는 CBS 없이 계산한 사실이다.
+  - goal 상호 점유
+  - 복수 그룹, 그룹들이 전체 Agent를 덮는지(`GROUPS_COVER_ALL_AGENTS`)
+  - T7 간선 의존
+  - Mock 경로를 줄 때의 충돌. 그룹 밖 Agent가 제자리에 있다는 **가정** 아래 계산하므로, 충돌이 없다는 결과가 안전을 뜻하지 않는다.
+- 복수 그룹(예: Bottleneck t=2)은 위 L0 "합집합" 해석과 달리 `FULL_GROUP`으로 보지 않고 `SELECTIVE_CANDIDATE_BLOCKED`로 분류한다. 합집합 처리 방식이 P4/P5에서 미정이기 때문이다. 어느 쪽이든 결과는 GLOBAL이다.
+- **추후 합의 필요 [PENDING]**: v0는 잘못되거나 불충분한 입력도 예외 없이 `GLOBAL`로 넘긴다(기존 Global 경로의 관문에 판단을 맡김). 유효한 입력에서 Global fallback을 쓸 기준과, 전체 입력이 잘못되었을 때 GLOBAL 대신 SAFE_STOP으로 가야 하는 기준은 **아직 합의되지 않았다**. 현재 동작은 임시 선택이다.
+- Mock 테스트(19개)는 판정 로직의 분류와 결정성만 검증한다. **실제 Selective의 안전성이나 성능을 검증한 것이 아니다.**
 
 ### 3.4 그룹 밖 Agent의 동작과 예약
 
@@ -299,6 +323,7 @@ SAFE_STOP(reason = 마지막 실패 사유)
 - fixture 원천: 위 4개 시점의 step CSV 행과 시나리오 파일. 테스트는 저장 로그를 **복사하지 않고** 경로와 sha256으로 참조하는 방식을 제안한다(outputs 수정 금지 유지).
 - T-WFG-*는 CBS 없이 순수 함수로 검증할 수 있다. T-NONE-1과 그룹 CBS 시험은 CBS 실행 승인이 필요하다.
 - 진행 상황 [확인]: T-WFG-1~5는 `tests/test_wfg.py`의 T1~T5로 구현되었다(추가: T4b, T6, T6b, T8–T8d, T9, T10a/b). 결과는 15 PASS / 1 SKIP이며, SKIP은 T7(PENDING)이다. 저장 로그는 git에서 제외되어 있으므로, T10b는 로그가 없으면 skip하고 있으면 경로와 sha256으로 대조한다. 기대 간선·그룹은 후보 규칙의 출력이며 합의된 정답이 아니다. T-NONE-1, T-FULL-1은 아직 구현하지 않았다.
+- 진행 상황 [확인]: Selective 의사결정 Mock 테스트 `tests/test_selective_decision.py` 19개가 통과했다. 범주는 전체 그룹, 그룹 없음, 부분 그룹, 독립 복수 그룹, 그룹 밖 위험, T7 의존, 불충분·잘못된 입력, 결정성이다. 실제 CBS는 실행하지 않았고 경로는 손으로 쓴 Mock이다. 이 결과는 실제 Selective 실행의 안전성·성능 검증이 아니다.
 
 ---
 
@@ -326,5 +351,5 @@ SAFE_STOP(reason = 마지막 실패 사유)
 
 - Solver, IL, Runner, Simulator, Monitor, Path Guard, 시나리오, registry, checkpoint, outputs는 수정하지 않았다.
 - CBS를 재실행하지 않았다. 5장의 그룹 CBS 관련 서술은 모두 [추정]이다.
-- Selective Runner와 `group_selector`를 만들지 않았다. WFG는 후보 순수 함수와 단위 테스트까지만 추가했고, 런타임에 연결하지 않았다.
+- Selective Runner와 `group_selector`를 만들지 않았고, 그룹 단위 CBS를 실행하지 않았다. WFG 후보 함수와 Selective 의사결정 함수(v0는 항상 GLOBAL)는 단위·Mock 테스트까지만 추가했고, 런타임에 연결하지 않았다.
 - P1~P5는 계속 PENDING이다.
