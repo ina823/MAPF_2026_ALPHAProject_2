@@ -1,9 +1,9 @@
 # Selective Hybrid 최소 API 계약 v0 (초안)
 
 - 상태: **DRAFT — 윤지와 합의 전. 승인된 구현 명세가 아니다.** 이 문서의 어떤 값도 운영 정책으로 확정되지 않았다. [제안] 항목은 합의 전까지 구현 근거로 쓰지 않는다.
-- 현재 코드 상태 [확인]: **WFG와 `group_selector`는 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이다.
+- 현재 코드 상태 [확인]: WFG는 **후보 순수 함수만** 있다(`src/hybrid/wfg.py`의 `build_wfg`, 규칙 `wfg-candidate-v0`, 3.2.1절). Runner, Monitor, CBS 어디에서도 호출하지 않으며 Selective Runner에 연결되지 않았다. **`group_selector`와 Selective Runner는 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이다.
 - 작성 기준: 브랜치 `feature/ina-corridor-e2e-v0`, HEAD `c635276`, 2026-11-10
-- 범위: 계약(인터페이스·불변식)과 DEV 로그 기반 입력 검증 설계만 다룬다. Selective Runner, WFG, 테스트 코드, fixture는 이번 단계에서 만들지 않는다.
+- 범위: 계약(인터페이스·불변식)과 DEV 로그 기반 입력 검증 설계를 다룬다. 이후 WFG 후보 순수 함수와 단위 테스트(`tests/test_wfg.py`)가 추가되었다. Selective Runner는 만들지 않았다.
 - 표기 규칙
   - **[확인]** 코드나 저장된 로그에서 직접 읽은 사실 (파일·줄 근거 병기)
   - **[추정]** 원본 로그·코드에 없는 내용을 추론한 것
@@ -51,7 +51,7 @@
 | 구성요소 | 지원함 [확인] | 아직 없음 [확인] |
 |---|---|---|
 | DeadlockMonitor (`src/common/deadlock_monitor.py`) | 전체 joint-state 반복(FULL) Trigger, `blocking_type`, persistent_conflict / no_progress 관찰, `rearm()` | Trigger-Partial(부분 집합 반복), 그룹 정보 출력, Coordination-stall 라벨 |
-| WFG | — | **코드 없음.** `common_runner.NOT_IMPLEMENTED = ("SELECTIVE_HYBRID", "SELECTIVE_WFG", "WFG")`이고, 이 메서드는 실행 전에 거부된다 (`src/compare/common_runner.py:26,70`) |
+| WFG | — | **런타임 연결 없음.** 후보 순수 함수 `build_wfg`(`src/hybrid/wfg.py`, 3.2.1절)만 있고 어떤 Runner도 호출하지 않는다. `common_runner.NOT_IMPLEMENTED = ("SELECTIVE_HYBRID", "SELECTIVE_WFG", "WFG")`이고, 이 메서드는 실행 전에 거부된다 (`src/compare/common_runner.py:26,70`) |
 | `group_selector` | — | **파라미터 자체가 없다.** `src/`, `scripts/`, `tests/` 어디에도 정의가 없고 grep 결과 0건이다. 3.8절의 "None 보존"은 새로 도입할 때의 계약이다. |
 | Global Hybrid Runner (`src/hybrid/global_hybrid.py`) | IL→TRIGGER→CBS_REQUEST→CBS_EXEC→IL_RESUME/SAFE_STOP, h_exec, rearm 모드(호출 수, 시간 예산, cooldown, same-state) | 부분 집합 CBS 호출, 그룹 밖 Agent 행동 정책, L0/L1/G 사다리 |
 | CBS 경로 (`run_cbs_runtime` → `replan_with_status` → `replan` → `CBSAdapter`) | 넘겨준 Agent 집합만으로 CBS 호출(부분 집합 입력 자체는 형식상 가능), ID 복원, 6종 status | 그룹 밖 Agent를 **시간 의존** 장애물·예약으로 넘기는 입력 경로 |
@@ -103,6 +103,20 @@ WfgResult:
 - `swap`: i의 intended = j의 위치이고 j의 intended = i의 위치이면 i↔j
 
 그룹은 위 간선의 무향 연결 성분 가운데 **차단된(blocked) Agent를 하나 이상 포함하는 성분**으로 한다.
+
+#### 3.2.1 현재 후보 구현 `wfg-candidate-v0` (DRAFT, P5 미합의)
+
+`src/hybrid/wfg.py`의 `build_wfg(current, intended, blocked, grid) -> WfgResult`는 위 제안 규칙을 순수 함수로 옮긴 **후보 구현**이다. 합의된 형식이 아니며, 런타임에서 호출되지 않는다.
+
+- **결과의 의미**: 출력은 한 step의 이동 의도에서 계산한 **후보 간선과 후보 그룹**이다. 그룹 CBS가 성공하거나, 해당 그룹만 계획하는 것이 안전하다는 뜻이 **아니다**.
+- **입력**: `(row, col)` 좌표와 런타임 Agent ID만 받는다. 로그의 `conflict_type`과 Monitor `blocking_agents`는 입력이 아니다. swap은 current/intended에서 다시 계산한다(5.4절: 로그에는 vertex로 남음).
+- **3.2 제안 형식과의 차이**:
+  - `edges`: `WfgEdge(src, dst, kind, cell, occupant_moves)`의 정렬된 tuple이다. contest·swap은 `src < dst`, occupy는 방향이 있다.
+  - `groups`: 정렬된 tuple의 tuple이다.
+  - 메타 정보는 `rule_version`뿐이다. `trigger_group_ids`는 아직 없다.
+  - contest는 목표 셀이 비어 있지 않아도 만든다. 점유된 셀이면 occupy 간선이 함께 생긴다.
+  - 벽이나 맵 밖으로 향하는 의도는 "이동 없음"으로 처리한다.
+- **T7 (미합의 정책)**: 점유자가 떠나는 칸으로 다른 Agent가 진입하려는 경우, 현재 구현은 `occupy` 간선을 만들고 그룹 연결에도 포함한다. 이것은 그룹을 크게 만드는 방향의 **임시 선택이며, 검증된 규칙이 아니다**. 해당 간선은 `occupant_moves=True`로 표시된다. T7 단위 테스트는 기대값 없이 **SKIP**으로 둔다. 저장된 네 사례 중 이 상황은 Bottleneck t=7에만 있으며, 이 경우 그룹 결과는 T7 규칙과 무관하다(contest·swap만으로 연결됨, `tests/test_wfg.py` T4b).
 
 ### 3.3 그룹 선택 사다리: L0 → L1(확장) → G → SAFE_STOP
 
@@ -237,7 +251,7 @@ SAFE_STOP(reason = 마지막 실패 사유)
 
 - [확인] `s_t = {0:(1,2), 1:(2,1), 2:(1,7), 3:(3,7)}`. Monitor는 4개 Agent 모두 VERTEX로 차단되었다고 기록했다.
 - 간선: `contest 0↔1 @ (2,2)`, `contest 2↔3 @ (2,7)`. 두 쌍 사이에는 간선이 없다.
-- 그룹 후보: **{0,1}, {2,3}** — 3.2의 제안 규칙을 저장 로그에 적용해 계산한 **로그 기반 후보**다. WFG 구현이 출력한 값이 아니고, **Selective 실행 성공 사례도 아니다.** 실제 기록된 CBS 호출은 4개 Agent 전체에 대한 Global 호출 1회다. 저장 로그 중 독립 그룹 후보를 시험할 수 있는 유일한 입력이다.
+- 그룹 후보: **{0,1}, {2,3}** — 3.2의 제안 규칙을 저장 로그에 적용해 계산한 **로그 기반 후보**다. 이후 후보 함수 `build_wfg`가 같은 값을 재현함을 단위 테스트(T3)로 확인했지만, 이것은 규칙 적용 결과일 뿐 **Selective 실행 성공 사례가 아니다.** 실제 기록된 CBS 호출은 4개 Agent 전체에 대한 Global 호출 1회다. 저장 로그 중 독립 그룹 후보를 시험할 수 있는 유일한 입력이다.
 - [추정, CBS 미실행] WFG 그룹은 독립이지만 공간적으로는 독립이 아니다. 두 그룹 모두 병목 (2,4)를 지나야 하고, agent 0, 1의 goal을 agent 2, 3이 S_2에서 점유하고 있다. 따라서 {0,1}만 L0로 계획하고 {2,3}을 정적 장애물로 고정하면 실패할 가능성이 높다. 반대로 {2,3}의 goal (0,1), (4,1)은 {0,1}이 점유하지 않는다. 이 사례는 P2와 L1 확장 규칙을 시험하기에 적합하다.
 
 ### 5.4 Bottleneck, Trigger t=7 (첫 CBS 창 이후 IL 재진입)
@@ -264,13 +278,13 @@ SAFE_STOP(reason = 마지막 실패 사유)
 | goals, grid | 예 [확인] | 시나리오 JSON([x,y]→(row,col) 변환 필요), `.npy` |
 | first_seen / period / blocking_type | 예 [확인] | `result.json` → `monitor.trigger_history[]`, `monitor.triggers[].positions` (monitor CSV는 rearm 후 최종 1행뿐이라 사용할 수 없다) |
 | **S_t 이후 IL의 의도** | 부분 [추정] | corridor/intersection/bottleneck t=2는 IL_ONLY 로그에서 같은 S_t에서 같은 행동이 반복된다. **bottleneck t=7의 S_7에 대한 IL 출력은 어느 로그에도 없다** (H3_REARM t=8은 CBS 행동) |
-| WFG 간선과 그룹 | 계산으로만 가능 [추정] | 로그에 WFG 기록이 없다. 3.2의 규칙을 적용한 결과이므로 규칙이 바뀌면 함께 바뀐다 |
+| WFG 간선과 그룹 | 계산으로만 가능 [추정] | 로그에 WFG 기록이 없다. 3.2의 규칙(후보 구현 `wfg-candidate-v0`)을 적용한 결과이므로 규칙이 바뀌면 함께 바뀐다 |
 | 그룹 CBS 결과 | 없음 | 저장된 CBS는 모두 전체 Agent 호출이다. CBS 재실행 금지이므로 이번 단계에서는 만들 수 없다 |
 | CBS 내부 탐색량 | 없음 | atb033 출력은 schedule/cost뿐이다 |
 
 ---
 
-## 6. 다음 단계 테스트 설계 (코드·fixture는 아직 만들지 않음)
+## 6. 다음 단계 테스트 설계 (T-WFG만 구현됨, 아래 진행 상황 참조)
 
 | ID | 대상 | 입력 | 기대 |
 |---|---|---|---|
@@ -284,6 +298,7 @@ SAFE_STOP(reason = 마지막 실패 사유)
 
 - fixture 원천: 위 4개 시점의 step CSV 행과 시나리오 파일. 테스트는 저장 로그를 **복사하지 않고** 경로와 sha256으로 참조하는 방식을 제안한다(outputs 수정 금지 유지).
 - T-WFG-*는 CBS 없이 순수 함수로 검증할 수 있다. T-NONE-1과 그룹 CBS 시험은 CBS 실행 승인이 필요하다.
+- 진행 상황 [확인]: T-WFG-1~5는 `tests/test_wfg.py`의 T1~T5로 구현되었다(추가: T4b, T6, T6b, T8–T8d, T9, T10a/b). 결과는 15 PASS / 1 SKIP이며, SKIP은 T7(PENDING)이다. 저장 로그는 git에서 제외되어 있으므로, T10b는 로그가 없으면 skip하고 있으면 경로와 sha256으로 대조한다. 기대 간선·그룹은 후보 규칙의 출력이며 합의된 정답이 아니다. T-NONE-1, T-FULL-1은 아직 구현하지 않았다.
 
 ---
 
@@ -311,4 +326,5 @@ SAFE_STOP(reason = 마지막 실패 사유)
 
 - Solver, IL, Runner, Simulator, Monitor, Path Guard, 시나리오, registry, checkpoint, outputs는 수정하지 않았다.
 - CBS를 재실행하지 않았다. 5장의 그룹 CBS 관련 서술은 모두 [추정]이다.
-- Selective Runner, WFG 구현, 테스트 코드, fixture를 만들지 않았다.
+- Selective Runner와 `group_selector`를 만들지 않았다. WFG는 후보 순수 함수와 단위 테스트까지만 추가했고, 런타임에 연결하지 않았다.
+- P1~P5는 계속 PENDING이다.
