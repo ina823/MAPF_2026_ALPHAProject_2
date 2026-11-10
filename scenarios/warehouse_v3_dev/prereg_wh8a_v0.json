@@ -1,0 +1,68 @@
+{
+  "prereg_schema": 1,
+  "title": "Warehouse generator v3 DEV pilot WH8-A: pre-registration (written before the candidate was generated or checked)",
+  "recorded_at": "2026-11-10",
+  "recorded_by": "Claude Code session, requested by ina823",
+  "base_commit": "60fbb6475088f93c5da90b05b02d9e86f059233e",
+  "design_doc": "docs/warehouse_generator_v3_plan.md",
+  "split_intent": "DEV (development side). NOT registered in registry/instances_v1.jsonl by this step; no split is changed.",
+  "predictions_status": "hand-derived from the layout parameters and the in-memory layout scan of design doc section 3 (worst case: every top-row and bottom-row cell as a goal). Agent cells were not known when this file was written.",
+  "selection_rule": {
+    "no_replacement": "The candidate is not replaced, dropped or re-seeded because of a result.",
+    "failures_are_kept": "A missed prediction is recorded as such; this file is not edited afterwards.",
+    "cbs": "CBS is not run in this step.",
+    "il": "No IL episode is run in this step; only the t=0 observation is built for the IL input check."
+  },
+  "check_criteria": {
+    "validity": "Grid is 0/1 int64; every start and goal is inside the grid on a free cell; starts distinct; goals distinct.",
+    "bfs_reachability": "bfs_dist(grid, goal)[start] >= 0 for every agent.",
+    "agent_id": "JSON agent_id equals the list index for every agent; the runtime id is the list index.",
+    "coordinates": "JSON [x, y] read through scenario_loader equals the generator's internal (row, col).",
+    "actions": "spec.ACTION_DELTA equals the simulator's action table for ids 0..4, and every move on one BFS shortest path per agent converts to an action id in 0..3 via spec.delta_to_action.",
+    "seed_reproducibility": "Two generations with the same seed are byte-identical, also across PYTHONHASHSEED 0 and 1.",
+    "il_ood": "il_compat.check_instance + quality_gate.classify_ood against registry/il_input_reference_v1.json; status and class are recorded with their bounds; auto_fail stays False.",
+    "registry": "registry.relate against every record + Registry.evaluate(candidate, 'DEV') in memory only; registry/instances_v1.jsonl sha256 equal before and after. Every automatic relation is a HOLD with final_decision null. Nothing is written into registry/.",
+    "width1_cell_definition": "A free cell whose two up/down neighbours are both wall-or-outside, or whose two left/right neighbours are both wall-or-outside."
+  },
+  "candidates": [
+    {
+      "candidate_id": "WH8-A",
+      "slug": "wh8a_9x8",
+      "seed": 31,
+      "builder": "warehouse_aisles",
+      "structure_type": "warehouse",
+      "params": {
+        "n_racks": 2,
+        "rack_len": 3,
+        "rack_w": 1,
+        "aisle_w": 2,
+        "cross_w": 2,
+        "station_rows": 2,
+        "n_down": 4,
+        "n_up": 4
+      },
+      "num_agents": 8,
+      "free_cells": 66,
+      "grid_rows": [
+        "00000000",
+        "00000000",
+        "00100100",
+        "00100100",
+        "00100100",
+        "00000000",
+        "00000000",
+        "00000000",
+        "00000000"
+      ],
+      "zone_rows": {"top_goal": 0, "top_start": 1, "station_start": 7, "station_goal": 8},
+      "predicted": {
+        "ood_class": "IN_RANGE",
+        "ood_note": "Boundary values: worst-case goal_col reaches -12 (= p0.5) and wall_count reaches 17 (= p99.5); both are inside by the inclusive check. robot_count <= 3 and other_goal_count <= 4 at t=0 by construction (4 agents per start row; the only goals within 2 rows of a start row are the 4 on the adjacent edge row).",
+        "width1_cells": 0,
+        "all_goals_reachable": true,
+        "automatic_relations": [],
+        "automatic_relations_note": "Hand check only: no existing map is expected to be a window of this layout or contain it. To be computed, not assumed."
+      }
+    }
+  ]
+}

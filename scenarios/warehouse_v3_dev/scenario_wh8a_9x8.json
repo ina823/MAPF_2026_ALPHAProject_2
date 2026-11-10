@@ -1,0 +1,133 @@
+{
+  "agents": [
+    {
+      "agent_id": 0,
+      "goal": [
+        4,
+        8
+      ],
+      "start": [
+        0,
+        1
+      ]
+    },
+    {
+      "agent_id": 1,
+      "goal": [
+        5,
+        8
+      ],
+      "start": [
+        2,
+        1
+      ]
+    },
+    {
+      "agent_id": 2,
+      "goal": [
+        7,
+        8
+      ],
+      "start": [
+        3,
+        1
+      ]
+    },
+    {
+      "agent_id": 3,
+      "goal": [
+        2,
+        8
+      ],
+      "start": [
+        5,
+        1
+      ]
+    },
+    {
+      "agent_id": 4,
+      "goal": [
+        4,
+        0
+      ],
+      "start": [
+        1,
+        7
+      ]
+    },
+    {
+      "agent_id": 5,
+      "goal": [
+        2,
+        0
+      ],
+      "start": [
+        3,
+        7
+      ]
+    },
+    {
+      "agent_id": 6,
+      "goal": [
+        0,
+        0
+      ],
+      "start": [
+        6,
+        7
+      ]
+    },
+    {
+      "agent_id": 7,
+      "goal": [
+        6,
+        0
+      ],
+      "start": [
+        7,
+        7
+      ]
+    }
+  ],
+  "generator": {
+    "base_generator_sha256": "a2e103190800d0d84d5e479ee998bbc98d2ac5cce2b7803ce54bd0a408f5837d",
+    "candidate_id": "WH8-A",
+    "code_sha256": "b303dced97e3d78203440bddad408234d0f34e55b3000009ee1419874408924a",
+    "descriptor": {
+      "agent_order": [
+        "top->station",
+        "top->station",
+        "top->station",
+        "top->station",
+        "station->top",
+        "station->top",
+        "station->top",
+        "station->top"
+      ],
+      "aisle_w": 2,
+      "cross_w": 2,
+      "generator": "alpha2_warehouse",
+      "generator_version": 3,
+      "n_down": 4,
+      "n_racks": 2,
+      "n_up": 4,
+      "rack_len": 3,
+      "rack_w": 1,
+      "station_rows": 2,
+      "structure": "warehouse_aisles",
+      "zone_rows": {
+        "station_goal": 8,
+        "station_start": 7,
+        "top_goal": 0,
+        "top_start": 1
+      }
+    },
+    "name": "alpha2_warehouse",
+    "prereg_sha256": "211b46baf575a823685254c5fa8b09feb84cb510428aaa3a3c6db0a4cd9839f9",
+    "seed": 31,
+    "version": 3
+  },
+  "map_file": "map_wh8a_9x8.npy",
+  "map_id": "wh8a_9x8",
+  "scenario_id": "scen_wh8a_9x8"
+}
