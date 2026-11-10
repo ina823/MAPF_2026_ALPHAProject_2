@@ -1,14 +1,100 @@
 # Selective Hybrid 최소 API 계약 v0 (초안)
 
-- 상태: **DRAFT — 윤지와 합의 전. 승인된 구현 명세가 아니다.** 이 문서의 어떤 값도 운영 정책으로 확정되지 않았다. [제안] 항목은 합의 전까지 구현 근거로 쓰지 않는다.
-- 현재 코드 상태 [확인]: WFG는 **후보 순수 함수만** 있다(`src/hybrid/wfg.py`의 `build_wfg`, 규칙 `wfg-candidate-v0`, 3.2.1절). Selective 의사결정 순수 모듈(`src/hybrid/selective_decision.py`의 `decide_selective`, 규칙 `selective-decision-v0`, 3.3.1절)도 있다. 이 모듈은 **v0에서 항상 `GLOBAL`을 반환한다.** 두 모듈 모두 Runner, Monitor, CBS 어디에서도 호출하지 않으며 Selective Runner에 연결되지 않았다. **`group_selector`, Selective Runner, 그룹 단위 CBS 실행은 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이다.
-- 작성 기준: 브랜치 `feature/ina-corridor-e2e-v0`, HEAD `c635276`, 2026-11-10
-- 범위: 계약(인터페이스·불변식)과 DEV 로그 기반 입력 검증 설계를 다룬다. 이후 WFG 후보 순수 함수와 단위 테스트(`tests/test_wfg.py`), Selective 의사결정 순수 모듈과 Mock 테스트(`tests/test_selective_decision.py`)가 추가되었다. Selective Runner는 만들지 않았다.
+- 상태: **DRAFT v0.1 — 윤지의 P1~P5 답변을 반영했다(0장).** 합의된 것은 **설계 원칙(AGREED_DESIGN)** 이며, 수치(예산·timeout 배분)와 일부 정책은 아직 OPEN_DECISION이다. 원칙이 합의되었다고 해서 구현·안전성 검증이 끝난 것은 아니다. 0장의 네 분류를 기준으로 읽는다.
+- 현재 코드 상태 [확인]: WFG는 **후보 순수 함수만** 있다(`src/hybrid/wfg.py`의 `build_wfg`, 규칙 `wfg-candidate-v0`, 3.2.1절). Selective 의사결정 순수 모듈(`src/hybrid/selective_decision.py`의 `decide_selective`, 규칙 `selective-decision-v0`, 3.3.1절)도 있다. 이 모듈은 **v0에서 항상 `GLOBAL`을 반환한다.** 안전 검사·사다리 순수 모듈(`src/hybrid/selective_safety.py`, 규칙 `selective-safety-v0`, 0.2절)이 추가되었다. 세 모듈 모두 Runner, Monitor, CBS 어디에서도 호출하지 않으며 Selective Runner에 연결되지 않았다. **`group_selector`, Selective Runner, 그룹 단위 CBS 실행은 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이고, 그 동작은 바뀌지 않았다.
+- 작성 기준: 브랜치 `feature/ina-corridor-e2e-v0`, 최초 작성 HEAD `c635276`, 합의 반영 HEAD `dd301ba`, 2026-11-10
+- 범위: 계약(인터페이스·불변식)과 DEV 로그 기반 입력 검증 설계를 다룬다. 이후 WFG 후보 순수 함수와 단위 테스트(`tests/test_wfg.py`), Selective 의사결정 순수 모듈과 Mock 테스트(`tests/test_selective_decision.py`), 안전 검사 순수 모듈과 Mock 안전 테스트(`tests/test_selective_safety.py`)가 추가되었다. Selective Runner는 만들지 않았다.
 - 표기 규칙
   - **[확인]** 코드나 저장된 로그에서 직접 읽은 사실 (파일·줄 근거 병기)
   - **[추정]** 원본 로그·코드에 없는 내용을 추론한 것
   - **[제안]** 이 문서가 내놓는 계약 후보. 합의 전까지 구속력 없음
   - **[PENDING]** 의도적으로 확정하지 않은 항목 (4장)
+  - 0장의 네 분류: **AGREED_DESIGN**(두 사람이 합의한 원칙) / **IMPLEMENTED**(현재 코드에 존재) / **PENDING_VALIDATION**(구현 또는 안전성 검증이 안 된 것) / **OPEN_DECISION**(추가로 정할 정책·수치)
+
+---
+
+## 0. P1~P5 합의 반영 현황 (2026-11-10)
+
+윤지의 P1~P5 답변을 아래와 같이 반영했다. 3~4장의 [제안]·[PENDING] 표기는 작성 당시 기록으로 남겨 두고, **현재 상태는 이 장이 우선한다.**
+
+### 0.1 AGREED_DESIGN — 두 사람이 합의한 원칙
+
+| ID | 합의 내용 |
+|---|---|
+| P1-a | WFG 간선은 `occupy`, `contest`, `swap` 세 종류로 구분한다. |
+| P1-b | `contest`는 직접 대기(wait-for) 관계가 아니라 **같은 칸을 두고 다투는 경합 관계**다. (그룹 연결에는 쓰지만, 방향이 있는 대기 관계로 해석하지 않는다.) |
+| P1-c | **WFG 원인 분석은 이동 전 상태 S_{t-1}(step CSV `current_*`)와 intended**를 쓴다. |
+| P1-d | **CBS 재계획의 시작 상태는 실제 이동 후의 S_t**다. Path[0] = S_t. |
+| P1-e | 기존 WFG(`build_wfg`)의 입력 계약과 좌표계(`(row, col)`, 런타임 Agent ID)는 임의로 바꾸지 않는다. |
+| P2-a | 최초 충돌 그룹에서 시작한다. |
+| P2-b | 그룹의 경로나 목표를 그룹 밖 Agent가 막으면, 그 Agent를 그룹 확장 후보로 추가한다. |
+| P2-c | Bottleneck t=2처럼 독립 그룹이 여럿이면, 초기 v0에서는 **그룹 합집합으로 계획하는 보수적 방식**을 검토 대상으로 한다. |
+| P2-d | **그룹 선택 결과와 실제 CBS 실행 성공은 구분**한다(선택됐다고 계획 가능·안전하다는 뜻이 아니다). |
+| P3-a | 현재 CBS(atb033)에는 **외부 예약 경로(시간축 제약) 입력 API가 없다**는 제약을 전제로 한다. |
+| P3-b | 그룹 밖 Agent의 **WAIT + 정적 장애물** 처리는 구현·검증 전까지 **후보 정책**이다. |
+| P3-c | 그룹 밖 Agent가 실제로 고정되지 않은 상태에서 정적 장애물이라고 가정하면 안 된다. |
+| P3-d | 그룹 목표를 그룹 밖 Agent가 점유하거나 그룹 경로를 가로막는 상황은 반드시 검증한다. |
+| P3-e | 정적 장애물 방식이 안전하게 검증되기 전에는 **Global 경로를 우선**한다. |
+| P4-a | 선택 그룹 내부 검증만으로는 부족하다. **그룹 밖 Agent의 WAIT을 합친 전체 Agent 검증**이 필요하다. |
+| P4-b | 검증 항목: Vertex/Edge 충돌, Path[0] = S_t, Agent ID 보존, 좌표 변환, 경로 길이, 실행 중 expected/actual 비교. |
+| P4-c | 좌표 변환은 기존 CBS Adapter(`src/cbs_adapter.py`)에서만 한다. |
+| P4-d | 기존 Path Guard 파일(`src/path_guard.py`)은 수정하지 않는다(재사용만). |
+| P5-a | `no_solution`, `timeout`은 남은 예산에 따라 그룹 확장 또는 Global fallback으로 넘어간다. |
+| P5-b | `invalid_path`, 전체 경로 검증 실패, 안전성 위반은 **즉시 SAFE_STOP**. |
+| P5-c | L0/L1/Global의 시도 횟수와 시간은 **같은 Trigger 안에서 통합 관리**한다. |
+| P5-d | 실패한 호출의 실제 latency도 전체 시간 예산에 포함한다. |
+| P5-e | 남은 시간보다 긴 timeout을 다음 호출에 주지 않는다. |
+
+### 0.2 IMPLEMENTED — 현재 코드에 실제로 있는 것
+
+| 항목 | 위치 | 연결 상태 | 비고 |
+|---|---|---|---|
+| **Global Hybrid Runner** | `src/hybrid/global_hybrid.py` | **실행 경로(유일)** | IL→TRIGGER→CBS_REQUEST→CBS_EXEC→IL_RESUME/SAFE_STOP. 전체 Agent CBS 1회/Trigger, **모든 비성공 status → SAFE_STOP**, 전체 Agent expected/actual(EXEC_MISMATCH). `GlobalHybridConfig`에 `group_selector` 필드 없음. 이번 단계에서 **변경 없음** |
+| Global 예산 (DEV opt-in) | `MonitorRearmConfig`, `scripts/run_hybrid_resume_dev.py:105-107` | Global에만 | **에피소드 단위**: `max_cbs_calls=2`, `cooldown_steps=2`, `cbs_time_budget_ms=60000`(누적 latency, None이면 거부). solver `timeout_sec=30`(`CBSAdapterConfig`, `run_cbs_runtime`, `CbsRuntimePlanner` 기본값). 모두 DEV 시험값 |
+| WFG 후보 | `src/hybrid/wfg.py` `build_wfg` | 미연결 | occupy/contest/swap, 입력 = step의 `current`(S_{t-1}) + `intended` → P1-a/c와 일치 |
+| Selective 의사결정 | `src/hybrid/selective_decision.py` `decide_selective` | 미연결 | **항상 `GLOBAL`** |
+| L0 합집합 선택 | `src/hybrid/selective_safety.py` `l0_union_group` | 미연결 | P2-c. 선택만 하고 실행 가능성은 말하지 않음(P2-d) |
+| 확장 후보 1단계 | `selective_safety.expansion_candidates` | 미연결 | P2-b. S_t 기준 GOAL_BLOCKED / PATH_BLOCKED. 반복(closure) 없음 |
+| 전체 Agent 합성 검증 | `selective_safety.validate_full_robot` | **미연결** | P4-a/b. 그룹 경로 + 그룹 밖 Agent를 S_t에 고정한 합성 경로를 Path Guard의 `validate_path_movements`, `validate_path_map_and_conflicts`로 검사(Path Guard 수정 없음). Agent 집합, Path[0]=S_t, 형식 검사 포함. 좌표 변환 없음 |
+| 실행 중 전체 비교 | `selective_safety.exec_mismatches` | 미연결 | 그룹 밖 Agent 포함 expected/actual |
+| Trigger 단위 사다리·예산 | `selective_safety.next_ladder_step`, `TriggerBudget`, `Attempt` | 미연결 | P5-a~e. **수치 기본값 없음**(호출자가 반드시 지정). 현재 실행 가능한 사다리는 `LADDER_UNTIL_OUTSIDE_POLICY_VERIFIED = ("G",)` |
+| Mock 테스트 | `tests/test_wfg.py`, `tests/test_selective_decision.py`, `tests/test_selective_safety.py` | — | CBS 미실행, 경로는 손으로 쓴 Mock |
+
+**Selective Runner 연결: 없음.** **전체 로봇 검증: 순수 함수로만 존재하며 어떤 실행 경로에서도 호출되지 않는다.**
+
+### 0.3 PENDING_VALIDATION — 구현되지 않았거나 안전성이 검증되지 않은 것
+
+| 항목 | 상태 |
+|---|---|
+| 그룹 밖 Agent WAIT + 정적 장애물 정책 (P3-b) | **미검증·미구현.** Runner는 CBS_EXEC 중 그룹 밖 Agent에 WAIT을 강제하는 경로가 없다. atb033에 정적 장애물로 넘기는 입력 경로도 만들지 않았다. `validate_full_robot`은 "고정된다면" 가정 아래 경로를 검사할 뿐, 고정 자체를 보장하지 않는다 |
+| 그룹 단위 CBS 호출 | 미구현. 실제 그룹 CBS 결과는 하나도 없다 |
+| Selective Runner / `group_selector` | 미구현 |
+| 전체 Agent 검증의 실행 경로 연결 | 미구현(순수 함수만) |
+| L0 합집합 방식의 실효성 | Mock만. Bottleneck t=2에서는 합집합 = 전체 Agent라 Global과 같은 입력이 된다 |
+| 확장 후 CBS 성공 여부 | 미검증(CBS 미실행) |
+| `group_selector=None` 회귀(T-NONE-1, 실제 CBS 로그 대조) | 미실행. 이번에는 Mock Global 에피소드 동일성만 확인 |
+
+### 0.4 OPEN_DECISION — 추가로 정해야 할 정책과 수치
+
+| ID | 내용 | 현재 코드의 임시 동작 |
+|---|---|---|
+| O-1 | Trigger당 총 시간 예산, 레벨별(L0/L1/G) timeout 배분, Trigger당 최대 시도 수 | 기본값 없음. 테스트 값은 TEST-ONLY |
+| O-2 | Trigger 단위 예산과 기존 에피소드 단위 `MonitorRearmConfig`(호출 수·누적 latency·cooldown)의 관계 | 미정. 둘은 독립적으로 존재 |
+| O-3 | 남은 시간이 작을 때 L1을 건너뛰고 G로 갈지, 최소 유효 timeout 기준 | 항상 사다리의 다음 단계, timeout = min(요청, 남은 시간) |
+| O-4 | `input_error`, `solver_error`, 미지 status 처리 | 보수적으로 SAFE_STOP(`UNAGREED_STATUS:*`), 현재 Global과 같음 |
+| O-5 | 확장 반복(closure) 여부와 그룹 크기 상한 | 1단계만 계산 |
+| O-6 | 전체 검증 horizon: 전체 경로(padding) vs 실행 창 H = min(h_exec, horizon) | 전체 경로 길이로 검사(더 보수적) |
+| O-7 | 잘못된 입력에서 GLOBAL 대신 SAFE_STOP으로 갈 기준 (3.3.1) | `decide_selective`는 GLOBAL |
+| O-8 | contest를 대기 관계가 아닌 경합으로 본다는 합의(P1-b)를 그룹 연결 규칙에 어떻게 반영할지, T7(점유자가 떠나는 occupy) 처리 | `build_wfg`는 contest·T7 occupy 모두 연결에 포함 (변경하지 않음, P1-e) |
+| O-9 | 그룹 밖 Agent 고정 중 no_progress 누적과 재Trigger의 상호작용 | 미정 |
+
+### 0.5 실제 Selective Runner 연결 전 차단 사항
+
+1. 그룹 밖 Agent를 실행 창 동안 실제로 고정(WAIT)하는 Runner 경로와, 그것을 CBS에 정적 장애물로 넘기는 입력 경로(Adapter를 통해서만 좌표 변환) — 구현과 검증 (P3-b/c).
+2. 전체 Agent 검증(`validate_full_robot`)을 boundary 이후·실행 전에 호출하는 지점과, 실행 중 `exec_mismatches`를 그룹 밖 Agent까지 적용하는 연결.
+3. O-1, O-2, O-3 수치·정책 확정 (예산 없이 사다리를 돌릴 수 없음).
+4. O-4, O-6, O-7 확정.
+5. 그룹 CBS 실제 실행(승인 후)으로 goal 점유·경로 차단 사례 확인, 그리고 `group_selector=None` 회귀(T-NONE-1).
 
 ---
 
@@ -74,8 +160,9 @@
 WfgInput:
   trigger_timestep: int                       # t
   agent_ids: tuple[int, ...]                  # 정렬된 전체 ID
-  positions: {agent_id: (row, col)}           # S_t (전체 Agent)
+  current:   {agent_id: (row, col)}           # S_{t-1}: step t 직전 위치 (WFG 원인 분석용, P1-c)
   intended:  {agent_id: (row, col)}           # step t에서 IL이 시도한 의도 셀 (충돌 해소 전)
+  s_t:       {agent_id: (row, col)}           # S_t: step t 직후 실제 위치 (CBS 시작 상태, P1-d; WFG 입력 아님)
   conflict_types: {agent_id: "none"|"wall"|"vertex"|"edge"}   # step t의 sim._last_conflict_types
   goals: {agent_id: (row, col)}
   grid: 2D (0=free, 1=obstacle)
@@ -83,6 +170,7 @@ WfgInput:
 ```
 
 - [확인] 위 필드는 모두 현재 Runner가 step t 시점에 이미 들고 있다 (`run_step`이 intended/current를 Monitor에 넘김).
+- [정정, 합의 P1-c/d] 초안은 `positions = S_t`를 WFG 입력으로 적었으나, 구현된 `build_wfg(current, intended, blocked, grid)`는 처음부터 step CSV의 `current`(S_{t-1})를 받는다. 합의에 따라 WFG는 S_{t-1}+intended, CBS·전체 검증은 S_t를 쓴다. 차단된 Agent는 S_{t-1} = S_t이지만, 이동에 성공한 Agent는 두 값이 다르다(`tests/test_selective_safety.py` TestStartStateIsSt).
 - [추정] "S_t 이후 IL이 다시 시도할 의도"는 아직 계산되지 않은 값이다. v0는 **step t에서 차단된 의도**를 대신 쓴다. IL_ONLY 로그에서는 같은 S_t에서 IL이 같은 행동을 반복했다 (5장). 다만 이것이 IL의 결정성을 보장하지는 않는다.
 
 ### 3.2 WFG 반환 (WFG → Runner)
@@ -209,6 +297,8 @@ SAFE_STOP(reason = 마지막 실패 사유)
 
 ## 4. PENDING (확정 금지 항목)
 
+> 2026-11-10 갱신: 아래 표는 합의 전 기록이다. P1~P5의 원칙은 0.1절에서 합의되었고, 남은 결정 사항은 0.4절(OPEN_DECISION), 검증되지 않은 기능은 0.3절(PENDING_VALIDATION)을 따른다.
+
 | ID | 항목 | 현재 알고 있는 것 | 결정에 필요한 것 |
 |---|---|---|---|
 | P1 | atb033 CBS의 동적 장애물·시간축 예약 지원 여부 | [코드 판독만] 입력 YAML에 시간 제약 필드가 없고 root 제약은 빈 상태로 시작한다. **실행으로 검증하지 않았다. 구현 가능한 기능으로 간주하지 않는다.** | 윤지 측 확인: solver 수정 없이 가능한지, wrapper나 다른 solver가 필요한지 |
@@ -323,6 +413,7 @@ SAFE_STOP(reason = 마지막 실패 사유)
 - fixture 원천: 위 4개 시점의 step CSV 행과 시나리오 파일. 테스트는 저장 로그를 **복사하지 않고** 경로와 sha256으로 참조하는 방식을 제안한다(outputs 수정 금지 유지).
 - T-WFG-*는 CBS 없이 순수 함수로 검증할 수 있다. T-NONE-1과 그룹 CBS 시험은 CBS 실행 승인이 필요하다.
 - 진행 상황 [확인]: T-WFG-1~5는 `tests/test_wfg.py`의 T1~T5로 구현되었다(추가: T4b, T6, T6b, T8–T8d, T9, T10a/b). 결과는 15 PASS / 1 SKIP이며, SKIP은 T7(PENDING)이다. 저장 로그는 git에서 제외되어 있으므로, T10b는 로그가 없으면 skip하고 있으면 경로와 sha256으로 대조한다. 기대 간선·그룹은 후보 규칙의 출력이며 합의된 정답이 아니다. T-NONE-1, T-FULL-1은 아직 구현하지 않았다.
+- 진행 상황 [확인]: T-FULL-1은 `tests/test_selective_safety.py`로 구현되었다(46개: 39 PASS, 7 SKIP). 범주는 요청 1~10(독립 그룹 합집합, 그룹 목표 점유, 그룹 밖 정적 위치와 경로 겹침, 그룹 간 vertex/edge, Path[0]≠S_t, Agent ID 유실·좌표계 혼동, timeout 후 예산 부족, no_solution 후 확장/Global, invalid_path·전체 검증 실패 SAFE_STOP, Global 결과 보존)이다. 7개 SKIP은 모두 `PENDING`으로 표시한 미합의 정책(0.3·0.4절)이며 아무것도 단정하지 않는다. "Global 보존"은 Mock 플래너 Global 에피소드의 결과 동일성과 Runner 미연결 여부만 확인했다. T-NONE-1(실제 CBS 로그 대조)은 아직이다.
 - 진행 상황 [확인]: Selective 의사결정 Mock 테스트 `tests/test_selective_decision.py` 19개가 통과했다. 범주는 전체 그룹, 그룹 없음, 부분 그룹, 독립 복수 그룹, 그룹 밖 위험, T7 의존, 불충분·잘못된 입력, 결정성이다. 실제 CBS는 실행하지 않았고 경로는 손으로 쓴 Mock이다. 이 결과는 실제 Selective 실행의 안전성·성능 검증이 아니다.
 
 ---
@@ -352,4 +443,5 @@ SAFE_STOP(reason = 마지막 실패 사유)
 - Solver, IL, Runner, Simulator, Monitor, Path Guard, 시나리오, registry, checkpoint, outputs는 수정하지 않았다.
 - CBS를 재실행하지 않았다. 5장의 그룹 CBS 관련 서술은 모두 [추정]이다.
 - Selective Runner와 `group_selector`를 만들지 않았고, 그룹 단위 CBS를 실행하지 않았다. WFG 후보 함수와 Selective 의사결정 함수(v0는 항상 GLOBAL)는 단위·Mock 테스트까지만 추가했고, 런타임에 연결하지 않았다.
-- P1~P5는 계속 PENDING이다.
+- P1~P5의 원칙은 0.1절에서 합의되었다. 수치와 일부 정책은 0.4절 OPEN_DECISION으로 남아 있다.
+- 합의 반영 단계(2026-11-10)에서도 Runner, Simulator, CBS Adapter, Path Guard, IL, checkpoint, registry, 시나리오, outputs는 수정하지 않았고 실제 CBS solver를 실행하지 않았다. 새로 추가한 것은 `src/hybrid/selective_safety.py`(미연결 순수 모듈)와 `tests/test_selective_safety.py`뿐이다.
