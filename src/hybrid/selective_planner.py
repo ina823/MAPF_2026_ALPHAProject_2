@@ -19,9 +19,18 @@ OPT-IN (``ladder`` containing "L0" / "L1", e.g. ("L0", "L1", "G"))
     Requires an explicit ``TriggerBudget`` (no default numbers: PENDING),
     ``acknowledge_unverified_outside_policy=True`` (P1-P5 are NOT resolved;
     ``decide_selective`` v0 still says GLOBAL and that decision is recorded,
-    not changed), a ``subset_planner`` that is ``test_only`` (a real subset
-    CBS does not exist yet -- PENDING, refused) and a Global planner that
-    accepts ``timeout_ms``. Per CBS_REQUEST:
+    not changed), and:
+      * a ``subset_planner`` that is either ``test_only`` (Mock) or EXACTLY
+        ``subset_cbs_adapter.SubsetCbsPlanner`` together with
+        ``allow_real_subset_cbs=True``. Any other non-``test_only`` subset
+        planner is refused (PENDING:REAL_SUBSET_CBS). Real Runner E2E (DEV
+        scenarios only, not a held-out evaluation) is recorded in
+        docs/selective_real_e2e_checkpoint_20261113.md; an outside agent that was
+        still moving before the Trigger has NOT been verified in a real run.
+      * a Global planner that accepts ``timeout_ms``: ``test_only`` (Mock) or
+        EXACTLY ``subset_cbs_adapter.BoundedGlobalCbsPlanner``. The plain
+        ``CbsRuntimePlanner`` (whole-second ``timeout_sec`` per object) is
+        refused for the ladder. Per CBS_REQUEST:
 
       1. WFG from the Trigger step's S_{t-1} + intended (ShadowMonitor);
          decision / groups / prechecks on S_t (= the planner's arguments,
@@ -46,17 +55,28 @@ OPT-IN (``ladder`` containing "L0" / "L1", e.g. ("L0", "L1", "G"))
          so the Runner's episode-level budget sees failed attempts too.
          A SAFE_STOP returns a non-success status, which the Runner's
          boundary refuses -> SAFE_STOP with no move.
+      6. Budget compliance (2026-11-13): an attempt whose measured latency
+         exceeds the ``timeout_ms`` it was granted, or is unknown, is never
+         executed even if it says ``success``: it is recorded with
+         ``raw_status`` = what the planner said and handed to the ladder as
+         ``timeout`` (BUDGET_OVERRUN / BUDGET_UNVERIFIABLE). The overrun is
+         charged. As a second guard, EXECUTE is refused when the summed
+         latency exceeds ``total_time_ms`` (TIME_BUDGET_OVERRUN).
 
 Execution, expected/actual over ALL agents (outside WAIT included) and
 IL_RESUME stay in the unchanged Runner (CBS_EXEC / IL_RESUME).
 
 Mock vs real: every attempt records ``planner_kind`` ("MOCK" for a
-``test_only`` planner). ``real_subset_cbs_called`` is always False in this
-version. A Mock success is never evidence that a real subset CBS succeeds.
+``test_only`` planner) and ``solver_invoked`` (None for Mock; for a real
+planner True only if its own call record says the CBS chain was entered).
+``real_subset_cbs_called`` / ``real_global_cbs_called`` become True only
+from such a real record -- never from a Mock. A Mock success is never
+evidence that a real subset CBS succeeds.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -78,6 +98,7 @@ from src.hybrid.selective_safety import (
     next_ladder_step,
 )
 from src.hybrid.selective_shadow import ShadowMonitor
+from src.hybrid.subset_cbs_adapter import BoundedGlobalCbsPlanner, SubsetCbsPlanner
 from src.hybrid.wfg import WfgResult, build_wfg
 from src.il.nav_hint import bfs_dist
 
@@ -94,8 +115,12 @@ SKIP_GOAL_BLOCKED = "GOAL_BLOCKED"
 SKIP_UNREACHABLE = "GOAL_UNREACHABLE_WITH_OUTSIDE_HELD"
 SKIP_ANALYSIS = "ANALYSIS_UNAVAILABLE"
 
+# attempt-level reasons for a "success" that is not executed (budget)
+BUDGET_OVERRUN = "BUDGET_OVERRUN"
+BUDGET_UNVERIFIABLE = "BUDGET_UNVERIFIABLE"
+
 PENDING = (
-    "PENDING:REAL_SUBSET_CBS",            # no real group CBS call exists (Yunji)
+    "PENDING:REAL_SUBSET_CBS",            # real adapter opt-in; DEV E2E only, moving-outside case unverified
     "PENDING:OUTSIDE_WAIT_POLICY_P2_P3",  # holding outside agents is unverified
     "PENDING:BUDGET_NUMBERS_P4",          # total/per-level ms, max_attempts
     "PENDING:EXPANSION_CLOSURE",          # L1 is one level only
@@ -153,11 +178,14 @@ class AttemptRecord:
     level: str
     group: tuple[int, ...]
     timeout_ms: float
-    status: Optional[str]
+    status: Optional[str]                  # status the LADDER saw (overrun success -> "timeout")
     latency_ms: Optional[float]
     full_check_ok: Optional[bool]
     full_check_reason: str
     planner_kind: str                      # "MOCK" | "REAL"
+    raw_status: Optional[str] = None       # status the planner returned
+    budget_overrun_ms: Optional[float] = None
+    solver_invoked: Optional[bool] = None  # None = Mock; real: CBS chain entered?
 
 
 @dataclass
@@ -180,6 +208,7 @@ class SelectiveCallRecord:
     outside_held: tuple = ()
     goal_status: Optional[dict] = None
     real_subset_cbs_called: bool = False
+    real_global_cbs_called: bool = False
     pending: tuple = PENDING
     rule_version: str = PLANNER_RULE_VERSION
 
@@ -201,7 +230,7 @@ class SelectivePlanner:
     paths_keying = "agent_id"
 
     def __init__(self, global_planner: Callable, monitor: ShadowMonitor, config: SelectiveConfig,
-                 subset_planner: Optional[Callable] = None):
+                 subset_planner: Optional[Callable] = None, *, allow_real_subset_cbs: bool = False):
         if not isinstance(monitor, ShadowMonitor):
             raise ValueError("SelectivePlanner needs the ShadowMonitor injected into the Runner")
         if not isinstance(config, SelectiveConfig):
@@ -212,13 +241,19 @@ class SelectivePlanner:
             if subset_planner is None:
                 raise ValueError("an L0/L1 ladder needs a subset_planner")
             if not getattr(subset_planner, "test_only", False):
-                raise ValueError("PENDING:REAL_SUBSET_CBS -- a real subset CBS planner is not available/verified; "
-                                 "only test_only subset planners are accepted")
+                if allow_real_subset_cbs is not True or type(subset_planner) is not SubsetCbsPlanner:
+                    raise ValueError("PENDING:REAL_SUBSET_CBS -- a non-test_only subset planner is accepted only "
+                                     "as SubsetCbsPlanner together with allow_real_subset_cbs=True")
             if not getattr(global_planner, "accepts_timeout_ms", False):
                 raise ValueError("an L0/L1 ladder needs a global planner that accepts timeout_ms "
                                  "(per-call timeout <= remaining budget)")
+            if not getattr(global_planner, "test_only", False) \
+                    and type(global_planner) is not BoundedGlobalCbsPlanner:
+                raise ValueError("an L0/L1 ladder accepts a real global planner only as BoundedGlobalCbsPlanner "
+                                 "(timeout_ms-bounded); claiming accepts_timeout_ms is not enough")
         self.global_planner = global_planner
         self.subset_planner = subset_planner
+        self.allow_real_subset_cbs = allow_real_subset_cbs is True
         self.monitor = monitor
         self.config = config
         self.records: list[SelectiveCallRecord] = []
@@ -325,7 +360,7 @@ class SelectivePlanner:
             step = next_ladder_step(ladder, attempts, budget)
             if step.action == ACTION_CALL:
                 plan = plans[step.level]
-                res, att, extra = self._call_level(plan, current_positions, goals, grid, s_t, gl, ids,
+                res, att, extra = self._call_level(rec, plan, current_positions, goals, grid, s_t, gl, ids,
                                                    step.timeout_ms)
                 rec.attempts.append(att)
                 attempts.append(Attempt(level=plan.level, group=plan.group, status=att.status,
@@ -334,6 +369,12 @@ class SelectivePlanner:
                 continue
             latencies = [a.latency_ms for a in attempts]
             total_sec = None if any(v is None for v in latencies) else sum(latencies) / 1000.0
+            if step.action == ACTION_EXECUTE and (total_sec is None
+                                                  or total_sec * 1000.0 > float(budget.total_time_ms)):
+                # second guard: never execute a plan whose Trigger spent more than its budget
+                rec.outcome = "SAFE_STOP:TIME_BUDGET_OVERRUN"
+                rec.returned_status = "timeout"
+                return SelectiveReplanResult("timeout", None, total_sec, "SELECTIVE_SAFE_STOP:TIME_BUDGET_OVERRUN")
             if step.action == ACTION_EXECUTE:
                 res, extra = results[-1]
                 rec.outcome = f"EXECUTE:{step.level}"
@@ -361,20 +402,43 @@ class SelectivePlanner:
             rec.returned_status = status
             return SelectiveReplanResult(status, None, total_sec, f"SELECTIVE_SAFE_STOP:{step.reason}")
 
-    def _call_level(self, plan, current_positions, goals, grid, s_t, gl, ids, timeout_ms):
-        if plan.level == LEVEL_GLOBAL:
-            planner = self.global_planner
-            res = planner(current_positions, goals, grid, timeout_ms=timeout_ms)
-        else:
-            planner = self.subset_planner
-            res = planner({a: s_t[a] for a in plan.group}, {a: gl[a] for a in plan.group},
-                          np.array(grid, copy=True),
-                          outside={a: s_t[a] for a in ids if a not in plan.group},
-                          timeout_ms=timeout_ms)
-        status = getattr(res, "status", None)
+    def _call_level(self, rec, plan, current_positions, goals, grid, s_t, gl, ids, timeout_ms):
+        planner = self.global_planner if plan.level == LEVEL_GLOBAL else self.subset_planner
+        real = not getattr(planner, "test_only", False)
+        n0 = len(planner.calls) if real else 0          # real planners are the two adapter classes
+        invoked = None
+        try:
+            if plan.level == LEVEL_GLOBAL:
+                res = planner(current_positions, goals, grid, timeout_ms=timeout_ms)
+            else:
+                res = planner({a: s_t[a] for a in plan.group}, {a: gl[a] for a in plan.group},
+                              np.array(grid, copy=True),
+                              outside={a: s_t[a] for a in ids if a not in plan.group},
+                              timeout_ms=timeout_ms)
+        finally:
+            if real:                                    # from the planner's own record, also on exception
+                invoked = any(c.get("called") is True for c in planner.calls[n0:])
+                if invoked and plan.level == LEVEL_GLOBAL:
+                    rec.real_global_cbs_called = True
+                elif invoked:
+                    rec.real_subset_cbs_called = True
+        raw_status = getattr(res, "status", None)
+        status = raw_status
         lat = getattr(res, "latency_sec", None)
-        lat_ms = None if lat is None else float(lat) * 1000.0
-        ok, why, extra = None, "", None
+        try:
+            lat_ms = None if lat is None or isinstance(lat, bool) else float(lat) * 1000.0
+        except (TypeError, ValueError):
+            lat_ms = None
+        if lat_ms is not None and not (math.isfinite(lat_ms) and lat_ms >= 0.0):
+            lat_ms = None                               # NaN / inf / negative = unknown, never "within budget"
+        ok, why, extra, overrun = None, "", None, None
+        if lat_ms is not None and lat_ms > float(timeout_ms):
+            overrun = lat_ms - float(timeout_ms)
+        if status == "success" and (lat_ms is None or overrun is not None):
+            # a late (or unmeasured) success is a missed deadline: never executed, no paths checked
+            status = "timeout"
+            why = (f"{BUDGET_UNVERIFIABLE}:latency unknown" if lat_ms is None else
+                   f"{BUDGET_OVERRUN}:{lat_ms:.3f}ms>{float(timeout_ms):.3f}ms")
         if status == "success":
             if plan.level == LEVEL_GLOBAL:
                 try:
@@ -388,8 +452,9 @@ class SelectivePlanner:
                 else:
                     composed = compose_selective_plan(raw, s_t, gl, ids, grid)
                     ok, why, extra = composed.ok, composed.reason, composed
-        kind = "MOCK" if getattr(planner, "test_only", False) else "REAL"
-        return res, AttemptRecord(plan.level, plan.group, float(timeout_ms), status, lat_ms, ok, why, kind), extra
+        kind = "REAL" if real else "MOCK"
+        return res, AttemptRecord(plan.level, plan.group, float(timeout_ms), status, lat_ms, ok, why, kind,
+                                  raw_status, overrun, invoked), extra
 
 
 class SelectivePathValidator:

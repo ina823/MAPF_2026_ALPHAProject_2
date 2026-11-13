@@ -1,5 +1,7 @@
 # Selective Hybrid 최소 API 계약 v0 (초안)
 
+> **상태 안내 (2026-11-13):** 아래 "Selective Runner / 그룹 CBS / 그룹 밖 WAIT 경로 미구현" 설명은 작성 당시 기록이다. 현재는 실제 Subset CBS가 opt-in DEV 경로로 연결되어 실제 Runner E2E를 DEV 시나리오에서 검증했다. 현재 구현·검증 상태와 미검증 항목은 `docs/selective_real_e2e_checkpoint_20261113.md`를 본다. 이 문서의 합의(P1~P5)와 OPEN_DECISION은 바뀌지 않았다.
+
 - 상태: **DRAFT v0.1 — 윤지의 P1~P5 답변을 반영했다(0장).** 합의된 것은 **설계 원칙(AGREED_DESIGN)** 이며, 수치(예산·timeout 배분)와 일부 정책은 아직 OPEN_DECISION이다. 원칙이 합의되었다고 해서 구현·안전성 검증이 끝난 것은 아니다. 0장의 네 분류를 기준으로 읽는다.
 - 현재 코드 상태 [확인]: WFG는 **후보 순수 함수만** 있다(`src/hybrid/wfg.py`의 `build_wfg`, 규칙 `wfg-candidate-v0`, 3.2.1절). Selective 의사결정 순수 모듈(`src/hybrid/selective_decision.py`의 `decide_selective`, 규칙 `selective-decision-v0`, 3.3.1절)도 있다. 이 모듈은 **v0에서 항상 `GLOBAL`을 반환한다.** 안전 검사·사다리 순수 모듈(`src/hybrid/selective_safety.py`, 규칙 `selective-safety-v0`, 0.2절)이 추가되었다. 세 모듈 모두 Runner, Monitor, CBS 어디에서도 호출하지 않으며 Selective Runner에 연결되지 않았다. **`group_selector`, Selective Runner, 그룹 단위 CBS 실행은 구현되어 있지 않다.** Selective Hybrid는 실행된 적이 없다. 실행 가능한 hybrid 경로는 Global Hybrid뿐이고, 그 동작은 바뀌지 않았다.
 - 작성 기준: 브랜치 `feature/ina-corridor-e2e-v0`, 최초 작성 HEAD `c635276`, 합의 반영 HEAD `dd301ba`, 2026-11-10

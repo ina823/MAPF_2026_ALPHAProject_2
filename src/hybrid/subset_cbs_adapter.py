@@ -1,12 +1,28 @@
-"""Real subset-CBS adapter for SelectivePlanner -- DRAFT, Mock-verified only.
+"""Real subset-CBS adapter (and timeout-bounded Global CBS) for SelectivePlanner -- DRAFT.
 
-Status: rule ``subset-cbs-adapter-v0``. NOT wired: ``SelectivePlanner`` still
-refuses every subset planner that is not ``test_only``
-(PENDING:REAL_SUBSET_CBS), and this class is deliberately NOT ``test_only``.
-Nothing in the runtime constructs it. Yunji's standalone check
-(``devtools/check_selective_subset_cbs.py``) showed that the real atb033 CBS
-can plan one subset; that is NOT evidence that a Runner episode using this
-adapter is safe.
+Status: rule ``subset-cbs-adapter-v0``. Wired OPT-IN only (2026-11-13, 1st
+connection): ``SelectivePlanner`` accepts this exact class as its subset
+planner only with ``allow_real_subset_cbs=True``; every other non-``test_only``
+subset planner is still refused (PENDING:REAL_SUBSET_CBS). This class is
+deliberately NOT ``test_only``. Nothing in the default runtime constructs it.
+Yunji's standalone check (``devtools/check_selective_subset_cbs.py``) and the
+planner-level real-solver tests show that the real atb033 CBS can plan one
+subset. Real Runner E2E on DEV scenarios (not held-out) is recorded in
+docs/selective_real_e2e_checkpoint_20261113.md; it does not cover an outside
+agent that was still moving before the Trigger.
+
+``BoundedGlobalCbsPlanner`` (below) is the ladder's G level: the same bounded
+call on ALL agents (no outside agents), ``accepts_timeout_ms = True``. It
+exists because ``CbsRuntimePlanner`` has only a whole-object ``timeout_sec``
+and cannot honour the per-call ``min(level timeout, remaining)``.
+
+Timeout enforcement measured with the real solver on Windows (2026-11-13):
+``subprocess.run(timeout=...)`` does terminate ``cbs.py`` (no process left
+after the call), but the measured wall time of a timed-out call exceeded
+``timeout_ms`` by ~55-105 ms (kill + pipe drain + YAML I/O). The limit is
+therefore a hard STOP, not a hard wall-clock BOUND; ``overhead_reserve_ms``
+is the only margin (value PENDING P4) and overruns are recorded, charged to
+the Trigger budget, and never executed by ``SelectivePlanner``.
 
 Call contract (the signature ``SelectivePlanner._call_level`` already uses)::
 
@@ -76,6 +92,7 @@ from src.path_guard import (
 
 ADAPTER_RULE_VERSION = "subset-cbs-adapter-v0"
 CALL_DIR_PREFIX = "subset_cbs_call_"
+GLOBAL_CALL_DIR_PREFIX = "global_cbs_call_"
 
 BLOCKED = "SUBSET_CBS_BLOCKED"          # refused before CBS; status input_error
 REJECTED = "SUBSET_CBS_REJECTED"        # CBS ran, result refused; status invalid_path
@@ -125,6 +142,7 @@ class SubsetCbsPlanner:
     paths_keying = "agent_id"
     test_only = False
     rule_version = ADAPTER_RULE_VERSION
+    call_dir_prefix = CALL_DIR_PREFIX
 
     def __init__(self, *, solver_root, work_root, overhead_reserve_ms: float):
         self.solver_root = Path(solver_root).resolve()
@@ -168,7 +186,7 @@ class SubsetCbsPlanner:
         start, goal, out, base, planning, solver_sec = prep
         rec.update(group=tuple(sorted(start)), outside=tuple(sorted(out)), solver_timeout_sec=solver_sec)
 
-        work_dir = self.work_root / f"{CALL_DIR_PREFIX}{rec['call_index']:02d}"
+        work_dir = self.work_root / f"{self.call_dir_prefix}{rec['call_index']:02d}"
         try:
             work_dir.mkdir(parents=True, exist_ok=False)
         except OSError as exc:
@@ -270,3 +288,39 @@ class SubsetCbsPlanner:
             if any(c != out[a] for c in full.full_paths[a]):
                 return f"OUTSIDE_NOT_HELD:{a}", None
         return "", {a: list(p) for a, p in sorted(norm.items())}
+
+
+class BoundedGlobalCbsPlanner:
+    """Real Global (all-agent) CBS whose every call honours ``timeout_ms``.
+
+    ``planner(current_positions, goals, grid, *, timeout_ms)`` -> CBSRuntimeResult,
+    agent-id keyed like ``CbsRuntimePlanner``. It is the same bounded call as
+    ``SubsetCbsPlanner`` with no outside agents: solver limit
+    ``(timeout_ms - overhead_reserve_ms) / 1000`` as a float (never rounded
+    up), fresh ``<work_root>/global_cbs_call_NN`` cwd, the same pre-call input
+    checks and post-success checks (endpoints = every agent reaches its goal,
+    movements, map/vertex/edge). ``latency_sec`` is the whole call's wall time.
+    A call without ``timeout_ms`` is refused (``input_error``, CBS not run):
+    an unbounded Global call cannot be charged to a Trigger budget.
+    """
+
+    paths_keying = "agent_id"
+    test_only = False
+    accepts_timeout_ms = True
+    rule_version = ADAPTER_RULE_VERSION
+
+    def __init__(self, *, solver_root, work_root, overhead_reserve_ms: float):
+        core = SubsetCbsPlanner(solver_root=solver_root, work_root=work_root,
+                                overhead_reserve_ms=overhead_reserve_ms)
+        core.call_dir_prefix = GLOBAL_CALL_DIR_PREFIX
+        self._core = core
+        self.solver_root = core.solver_root
+        self.work_root = core.work_root
+        self.overhead_reserve_ms = core.overhead_reserve_ms
+
+    @property
+    def calls(self) -> List[Dict[str, Any]]:
+        return self._core.calls
+
+    def __call__(self, current_positions, goals, grid, *, timeout_ms=None) -> CBSRuntimeResult:
+        return self._core(current_positions, goals, grid, outside={}, timeout_ms=timeout_ms)
