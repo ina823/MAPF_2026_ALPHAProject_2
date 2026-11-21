@@ -78,7 +78,11 @@ def load_run_data(run_dir):
         _fail(run_id, f"result.json missing field(s): {', '.join(missing)}")
     run_id = result["run_id"]
 
-    grid, scen_starts, scen_goals = load_scenario(result["scenario"])
+    from scripts.saved_scenario_path import resolve_saved_scenario_path
+    scenario_path = resolve_saved_scenario_path(result["scenario"])
+    grid, scen_starts, scen_goals = load_scenario(scenario_path)
+
+
     if _sha256_grid(grid) != result["grid_sha256"]:
         _fail(run_id, "scenario grid differs from the run's grid_sha256")
     starts, goals = _state(result["starts"]), _state(result["goals"])

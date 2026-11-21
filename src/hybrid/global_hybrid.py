@@ -35,6 +35,18 @@ None every line of the original state machine runs exactly as before):
     RECALL_COOLDOWN_ACTIVE / RECALL_SAME_STATE) and no further move.
 The limit values live in ``MonitorRearmConfig``, which has no defaults.
 
+Optional, DEV opt-in only (keyword ``extra_trigger`` of
+``run_global_hybrid_episode``, default None -- with None nothing below runs and
+results are unchanged; ``GlobalHybridConfig`` is not changed): a second Trigger
+source (the DEV Partial Trigger ``PartialTriggerSource``). It requires
+``rearm`` (so the same call limit / budget / cooldown / same-S_t gates apply)
+and must be bound to exactly this run's ``planner`` and ``monitor``
+(``bound_planner`` / ``bound_monitor`` identity). It is consulted only in IL,
+only when the Monitor has NOT reported a fresh full repeat at that step (FULL
+has priority), at most once per step, and its event then goes through the
+same overlap-integrity check, recall guard and recall policy as a FULL Trigger
+(I-1/I-2 unchanged). This module never interprets the event itself.
+
 ``planner(current_positions, goals, grid) -> ReplanResult``, keyed by the
 planner's ``paths_keying`` attribute:
   * "index" (default, Mock planners): positional lists in
@@ -151,6 +163,7 @@ def run_global_hybrid_episode(
     monitor,
     logger=None,
     simulator_cls=MAPFStepSimulator,
+    extra_trigger=None,
 ):
     """Run one Global Hybrid episode. starts/goals: {agent_id: (row, col)}.
 
@@ -163,6 +176,18 @@ def run_global_hybrid_episode(
     if monitor is None:
         raise ValueError("Global Hybrid requires a DeadlockMonitor")
     check_validator_pairing(planner, path_validator)
+    extra = extra_trigger
+    if extra is not None:
+        if config.rearm is None:
+            raise ValueError("extra_trigger needs the rearm / bounded-recall contract (config.rearm)")
+        for attr in ("poll", "reset", "describe"):
+            if not callable(getattr(extra, attr, None)):
+                raise ValueError(f"extra_trigger must provide {attr}()")
+        if not isinstance(getattr(extra, "reason", None), str) or extra.reason == "TRIGGER_FULL_REPEAT":
+            raise ValueError("extra_trigger needs its own reason string")
+        if getattr(extra, "bound_planner", None) is not planner or getattr(extra, "bound_monitor", None) is not monitor:
+            raise ValueError("extra_trigger must be bound to this run's planner and monitor")
+        extra.reset()
 
     sim = simulator_cls(cbs_solver_root=None, max_steps=max_steps)
     obs = sim.reset(grid, starts, goals)
@@ -284,11 +309,21 @@ def run_global_hybrid_episode(
                 and r.trigger_timestep == t
                 and t not in handled_triggers
             )
+            trigger_reason = "TRIGGER_FULL_REPEAT"
+            extra_event = None
+            if extra is not None and not fresh_trigger and t not in handled_triggers:
+                # FULL has priority; the extra source is asked at most once per step
+                extra_event = extra.poll(t)
+                if extra_event is not None:
+                    fresh_trigger, trigger_reason = True, extra.reason
             if fresh_trigger and rearm_cfg is not None:
                 handled_triggers.add(t)
                 record = {"t": t, "first_seen": r.first_seen, "period": r.period,
                           "blocking_type": r.blocking_type, "positions": current_positions(),
                           "cbs_calls_before": len(cbs_calls)}
+                if extra is not None:
+                    record["reason"] = trigger_reason
+                    record["extra_event"] = None if extra_event is None else extra.describe(extra_event)
                 triggers.append(record)
                 if r.overlap_integrity_status != "CLEAN":
                     record["outcome"] = "OVERLAP_NOT_CLEAN"
@@ -301,7 +336,7 @@ def run_global_hybrid_episode(
                     continue
                 if config.recall_policy.allow_call(len(cbs_calls), t):
                     record["outcome"] = "CBS_REQUEST"
-                    move_to(TRIGGER, "TRIGGER_FULL_REPEAT")
+                    move_to(TRIGGER, trigger_reason)
                 else:
                     record["outcome"] = "RECALL_POLICY_DENIED"
             elif fresh_trigger:

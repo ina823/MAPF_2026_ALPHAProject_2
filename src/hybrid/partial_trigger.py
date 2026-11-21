@@ -1,9 +1,13 @@
-"""Partial Trigger CANDIDATE detector -- SHADOW ONLY, DRAFT (rule ``partial-trigger-candidate-v0``).
+"""Partial Trigger CANDIDATE detector -- DRAFT (rule ``partial-trigger-candidate-v0``).
 
-Nothing here changes the Runner: no CBS call, no WAIT, no state transition, no Simulator
-action. ``PartialTriggerShadow`` is a transparent ``DeadlockMonitor`` wrapper that returns the
-inner Monitor's result object untouched and only RECORDS what the detector concludes. The
-default Global Hybrid path does not import this module.
+``PartialTriggerDetector`` / ``PartialTriggerShadow`` are SHADOW ONLY: no CBS call, no WAIT,
+no state transition, no Simulator action. ``PartialTriggerShadow`` is a transparent
+``DeadlockMonitor`` wrapper that returns the inner Monitor's result object untouched and only
+RECORDS what the detector concludes. The default Global Hybrid path does not import this module.
+
+``PartialTriggerSource`` (stage 2, 2026-11-13) is the ONLY way a candidate can reach the
+Runner: an explicit DEV opt-in passed as ``run_global_hybrid_episode(extra_trigger=...)`` with a
+Selective opt-in planner and ``rearm``. Without it nothing in this module affects a run.
 
 Why: the v0 Trigger is TRIGGER_FULL_REPEAT (the whole joint state repeats). Any agent that
 keeps moving -- even one unrelated to a stall -- postpones it (P3F, 2026-11-13: 5 steps).
@@ -24,7 +28,8 @@ Per step ``t`` the detector returns ONE status:
                        (2) the key names >= 2 agents (group G = the key's agents)
                        (3) at least one agent of G is not at its goal ("active")
                        (4) every active agent of G has a no_progress streak >= k_no_progress
-                       (5) after a rearm, both streaks lie entirely after the rearm step
+                       (5) after a rearm, (1) and (4) also hold with both streaks clamped
+                           to the steps after the rearm (only fresh evidence counts)
   NONE               otherwise (no key / transient contest / members progressing / all at goal)
 
 A candidate is NOT a deadlock verdict. Agents outside G are never consulted, so their moves
@@ -36,7 +41,10 @@ De-duplication: an event is identified by ``(kind, cell(s), agents)``. While the
 condition holds continuously for the same identity, only the first step emits ``new_event``.
 If it ends and later holds again, a new event is emitted with ``repeat_since_rearm=True``.
 ``on_rearm(t)`` (Monitor rearm after IL_RESUME) clears the active set and the per-rearm
-history and requires fresh evidence: streaks must start after t (proposal, see the doc).
+history and requires fresh evidence: only the part of each streak after t counts
+(proposal). Fixed 2026-11-13: the first version rejected any streak that began before the
+rearm, which -- because no_progress is not reset by a CBS window -- suppressed every later
+candidate after a resume.
 
 Thresholds have NO defaults: ``PartialTriggerConfig`` must be given explicitly (DEV values;
 K = 2/3/5 are test candidates, not validated operating values).
@@ -179,9 +187,16 @@ class PartialTriggerDetector:
         if slow:
             return done(NONE, f"KEY_AGENTS_PROGRESSING:{slow}", **info)
         if self._rearm_t is not None:
+            # Only evidence gathered AFTER the rearm counts. The Monitor keeps both streaks
+            # through a rearm, and a CBS window resets the conflict streak but not no_progress
+            # (a planned WAIT is "no progress"), so streaks are clamped to the post-rearm window
+            # instead of being rejected (rejecting would suppress every later candidate).
             window = t - self._rearm_t
-            if streak > window or any(np_all.get(a, 0) > window for a in active):
-                return done(NONE, f"EVIDENCE_BEFORE_REARM_AT_{self._rearm_t}", **info)
+            fresh_c = min(streak, window)
+            fresh_np = {a: min(np_all.get(a, 0), window) for a in active}
+            if fresh_c < cfg.k_conflict or any(v < cfg.k_no_progress for v in fresh_np.values()):
+                return done(NONE, f"FRESH_EVIDENCE_SINCE_REARM_AT_{self._rearm_t}:"
+                                  f"conflict={fresh_c},no_progress={min(fresh_np.values())}", **info)
 
         ident = (kind, cells, group)
         new = ident not in self._active
@@ -191,6 +206,78 @@ class PartialTriggerDetector:
             self._fired_since_rearm.add(ident)
         return PartialObservation(t=t, status=PARTIAL_CANDIDATE, reason="CANDIDATE", n_agents=n,
                                   new_event=new, repeat_since_rearm=repeat, **info)
+
+
+PARTIAL_TRIGGER_REASON = "TRIGGER_PARTIAL_CANDIDATE"
+
+
+class PartialTriggerSource:
+    """``run_global_hybrid_episode(..., extra_trigger=...)`` for an explicit, DEV-only Partial Trigger opt-in.
+
+    Construction refuses unless ALL hold: ``allow_partial_trigger=True``; ``planner`` is a
+    ``SelectivePlanner`` with an opt-in (L0/L1) ladder; ``monitor`` is that planner's own
+    ``ShadowMonitor`` and its inner monitor is a ``PartialTriggerShadow`` holding the named
+    detector. So the Runner, the planner's ``last_step`` (S_{t-1}, intended, S_t) and the
+    detector all see the SAME single ``observe_step`` per step.
+
+    ``poll(t)`` returns the detector's observation only if it was made at exactly step ``t``,
+    is ``PARTIAL_CANDIDATE`` with ``new_event=True``, the ShadowMonitor's last step is also
+    ``t``, and ``t`` was not handed out before (no stale or reused event). Everything else
+    -- FULL priority, integrity, recall limits, budget, cooldown, rearm -- is the Runner's.
+    """
+
+    reason = PARTIAL_TRIGGER_REASON
+
+    def __init__(self, *, monitor, planner, detector_name: str, allow_partial_trigger: bool = False):
+        from src.hybrid.selective_planner import SelectivePlanner
+        from src.hybrid.selective_shadow import ShadowMonitor
+        if allow_partial_trigger is not True:
+            raise ValueError("Partial Trigger is DEV opt-in only: pass allow_partial_trigger=True")
+        if not isinstance(planner, SelectivePlanner) or not planner.config.opt_in:
+            raise ValueError("Partial Trigger needs a SelectivePlanner with an opt-in L0/L1 ladder")
+        if not isinstance(monitor, ShadowMonitor) or planner.monitor is not monitor:
+            raise ValueError("monitor must be the SelectivePlanner's own ShadowMonitor")
+        inner = monitor.inner
+        if not isinstance(inner, PartialTriggerShadow):
+            raise ValueError("ShadowMonitor must wrap a PartialTriggerShadow (one observe_step per step)")
+        if detector_name not in inner.detectors:
+            raise ValueError(f"no detector {detector_name!r} in the PartialTriggerShadow")
+        self.bound_planner = planner
+        self.bound_monitor = monitor
+        self.detector = inner.detectors[detector_name]
+        self.detector_name = detector_name
+        self.reset()
+
+    def reset(self):
+        self._handed_out: set[int] = set()
+        self.fired: list[PartialObservation] = []
+        self.refused: list[tuple[int, str]] = []
+
+    def poll(self, t: int) -> Optional[PartialObservation]:
+        obs = self.detector.observations[-1] if self.detector.observations else None
+        last = self.bound_monitor.last_step
+        why = None
+        if obs is None or obs.t != t:
+            why = "NO_OBSERVATION_AT_T"
+        elif last is None or last.t != t or last.episode != self.bound_monitor.episode:
+            why = "MONITOR_STEP_MISMATCH"
+        elif obs.status != PARTIAL_CANDIDATE or not obs.new_event:
+            return None
+        elif t in self._handed_out:
+            why = "ALREADY_HANDED_OUT"
+        if why is not None:
+            self.refused.append((t, why))
+            return None
+        self._handed_out.add(t)
+        self.fired.append(obs)
+        return obs
+
+    @staticmethod
+    def describe(obs: PartialObservation) -> dict:
+        return {"t": obs.t, "group": obs.group, "key_kind": obs.key_kind, "key_cells": obs.key_cells,
+                "conflict_streak": obs.conflict_streak, "no_progress": obs.no_progress,
+                "parked_in_group": obs.parked_in_group, "conflicted_outside_key": obs.conflicted_outside_key,
+                "group_smaller_than_all": obs.group_smaller_than_all, "rule_version": RULE_VERSION}
 
 
 class PartialTriggerShadow:

@@ -106,10 +106,22 @@ class TestRule(unittest.TestCase):
         self.assertTrue(again.new_event and again.repeat_since_rearm)
         self.assertEqual(len(d.events), 2)
         d.on_rearm(10)
-        old = d.observe(11, res(streak=5, np_=((0, 5), (1, 5))), POS, CT)    # evidence older than rearm
-        self.assertEqual((old.status, old.reason), (NONE, "EVIDENCE_BEFORE_REARM_AT_10"))
+        old = d.observe(11, res(streak=5, np_=((0, 5), (1, 5))), POS, CT)    # only 1 step after the rearm
+        self.assertEqual((old.status, old.reason), (NONE, "FRESH_EVIDENCE_SINCE_REARM_AT_10:conflict=1,no_progress=1"))
         fresh = d.observe(12, res(streak=2), POS, CT)
         self.assertTrue(fresh.new_event and not fresh.repeat_since_rearm)
+
+    def test_rearm_counts_post_rearm_part_of_a_long_no_progress_streak(self):
+        # regression: no_progress keeps growing through a CBS window; it must not suppress forever
+        d = det()
+        d.on_rearm(3)
+        self.assertEqual(d.observe(4, res(streak=1, np_=((0, 4), (1, 4))), POS, CT).status, NONE)
+        o = d.observe(5, res(streak=2, np_=((0, 5), (1, 5))), POS, CT)        # 2 fresh steps of each
+        self.assertEqual((o.status, o.new_event), (PARTIAL_CANDIDATE, True))
+        d2 = det()
+        d2.on_rearm(3)
+        o = d2.observe(5, res(streak=5, np_=((0, 1), (1, 5))), POS, CT)       # agent 0 progressed recently
+        self.assertEqual(o.status, NONE)
 
     def test_edge_key_cells(self):
         key = ("edge", frozenset({(0, 1), (0, 2)}), frozenset({0, 1}))

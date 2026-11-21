@@ -181,9 +181,15 @@ def build_run_view(run_dir: Path, episode: Dict, call_rows: List[Dict]) -> Dict:
     def fail(message):
         raise BuildError(f"{run_id}: {message}")
 
-    if sha256_file(raw["scenario"]) != raw["scenario_sha256"]:
+    from scripts.saved_scenario_path import resolve_saved_scenario_path
+
+    scenario_path = resolve_saved_scenario_path(raw["scenario"])
+
+    if sha256_file(scenario_path) != raw["scenario_sha256"]:
         fail("scenario file differs from the recorded sha256")
-    grid, _, goals = load_scenario(raw["scenario"])
+
+    grid, _, goals = load_scenario(scenario_path)
+
     trajectory = [{int(a): tuple(p) for a, p in s.items()} for s in raw["trajectory"]]
     agents = view["agents"]
 
@@ -370,7 +376,9 @@ def build_panel_data(batch_dir: Path, scenario_key: str = DEFAULT_SCENARIO_KEY) 
             if run[field] != first[field]:
                 raise BuildError(f"{run['run_id']}: {field} differs between runs")
 
-    inputs = [episodes_path, calls_path, Path(first["scenario_path"])]
+    from scripts.saved_scenario_path import resolve_saved_scenario_path
+    inputs = [episodes_path, calls_path, resolve_saved_scenario_path(first["scenario_path"])]
+
     for run in runs:
         inputs += [Path(run["source_result_path"]), Path(run["steps_csv_path"])]
     inputs_sha = {p.as_posix(): sha256_file(p) for p in inputs}
