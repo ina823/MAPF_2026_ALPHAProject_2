@@ -1,0 +1,3 @@
+batch_id,run_id,method,call_index,cbs_request_kind,request_timestep,status,accepted,reason,error,solver_latency_ms,planner_wall_ms,exec_policy,h_exec_config,planned_horizon,exec_window,exec_steps,controlled_agent_steps,agents_at_goal_at_exec_end,exec_end
+compare_20261122_235630,20261122_235631_corridor_bay_n2_PURE_CBS_DEV_SINGLE_PLAN,PURE_CBS_DEV_SINGLE_PLAN,1,INITIAL_STATE,0,success,True,,,301.49740001070313,302.61260000406764,DEV_SINGLE_PLAN_FULL,,12,12,12,24,2,GOAL_REACHED
+compare_20261122_235630,20261122_235632_intersection_n2_PURE_CBS_DEV_SINGLE_PLAN,PURE_CBS_DEV_SINGLE_PLAN,1,INITIAL_STATE,0,success,True,,,323.8802000123542,325.2400000055786,DEV_SINGLE_PLAN_FULL,,5,5,5,10,2,GOAL_REACHED
