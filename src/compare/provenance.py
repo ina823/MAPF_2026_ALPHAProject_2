@@ -258,6 +258,9 @@ def cbs_request_states(records) -> List[Dict[str, Any]]:
         kind = REQUEST_KIND.get(rec.method)
         if kind is None:
             continue
+        if rec.method == SELECTIVE_METHOD:   # one entry per ladder attempt, not per Runner call
+            out += selective_solver_input_states(rec, kind)
+            continue
         for i, call in enumerate(rec.cbs_calls, start=1):
             t = _request_timestep(rec.method, call)
             state = {str(a): list(p) for a, p in sorted(rec.trajectory[t].items())}
@@ -271,6 +274,142 @@ def cbs_request_states(records) -> List[Dict[str, Any]]:
                                         if solver_input.is_file() else None),
             })
     return out
+
+
+# -- Selective Hybrid solver inputs ----------------------------------------------
+
+SELECTIVE_METHOD = "SELECTIVE_HYBRID_DEV"   # = common_runner.SELECTIVE_HYBRID_DEV (no import here)
+SELECTIVE_CBS_DIR = "selective_cbs"
+SELECTIVE_SIDES = {"subset": ("subset_cbs", "subset_cbs_call_"),   # = subset_cbs_adapter prefixes
+                   "global": ("global_cbs", "global_cbs_call_")}
+SOLVER_INPUT_PARTS = ("outputs", "paths", "replan", "solver_input.yaml")
+SOLVER_INPUT_OK = ("VERIFIED", "NOT_CALLED")
+SELECTIVE_INPUTS_NOTE = (
+    "SELECTIVE_HYBRID_DEV: one entry per ladder attempt (call_index = Selective request, "
+    "attempt_index = attempt in it). solver_input_sha256 is the sha256 of the raw "
+    "solver_input.yaml bytes hashed when the run ended; solver_input_file_sha256 is the same "
+    "file hashed again when the manifest is written. solver_input_check: VERIFIED (both equal, "
+    "file in the attempt's own call directory, its starts/goals are the attempt group's); "
+    "NOT_CALLED (no solver call, no file); MISSING / UNRECORDED / MISMATCH / MAPPING_MISMATCH / "
+    "UNCLAIMED_FILE make the batch not reproducible."
+)
+
+
+import yaml  # noqa: E402  (PyYAML: already a solver-chain dependency)
+
+
+class _SolverYamlLoader(yaml.SafeLoader):
+    """Safe loader that also reads the ``!!python/tuple`` obstacles cbs_adapter writes."""
+
+
+_SolverYamlLoader.add_constructor("tag:yaml.org,2002:python/tuple",
+                                  lambda loader, node: tuple(loader.construct_sequence(node)))
+
+
+def _cell(mapping, aid):
+    value = mapping[aid] if aid in mapping else mapping[str(aid)]
+    return tuple(value)
+
+
+def _input_cells(raw: bytes):
+    """(sorted starts, sorted goals) as (row, col) from atb033 [x, y] = [col, row]."""
+    data = yaml.load(raw.decode("utf-8"), Loader=_SolverYamlLoader)
+    agents = data["agents"]
+    return (sorted((a["start"][1], a["start"][0]) for a in agents),
+            sorted((a["goal"][1], a["goal"][0]) for a in agents))
+
+
+def selective_solver_input_states(rec, kind) -> List[Dict[str, Any]]:
+    """Solver-input provenance of every Selective attempt of one run.
+
+    Each attempt is one adapter call, numbered per adapter (subset for L0/L1,
+    global for G) in attempt order, so its call directory is known without
+    reading the record's path; the recorded path must be that directory. The
+    file is hashed again from its raw bytes and its starts / goals must be the
+    attempt group's at the request state. Any solver_input.yaml under the
+    run's selective_cbs directory that no attempt owns is reported too.
+    """
+    run_dir = Path(rec.run_dir)
+    root = run_dir / SELECTIVE_CBS_DIR
+    counters = {side: 0 for side in SELECTIVE_SIDES}
+    claimed, out = set(), []
+    for att in rec.planner_calls:
+        side = "global" if att.get("level") == "G" else "subset"
+        counters[side] += 1
+        sub, prefix = SELECTIVE_SIDES[side]
+        expected = root / sub / f"{prefix}{counters[side]:02d}" / Path(*SOLVER_INPUT_PARTS)
+        claimed.add(expected.resolve())
+        req = att.get("request_index")
+        call = rec.cbs_calls[req - 1] if isinstance(req, int) and 1 <= req <= len(rec.cbs_calls) else None
+        t = call["trigger_timestep"] if call is not None else None
+        entry = {
+            "run_id": rec.run_id, "method": rec.method, "call_index": req,
+            "attempt_index": att.get("attempt_index"), "level": att.get("level"),
+            "group": list(att.get("group") or []), "request_kind": kind, "request_timestep": t,
+            "start_state_sha256": (_canon_sha({str(a): list(p) for a, p in sorted(rec.trajectory[t].items())})
+                                   if t is not None else None),
+            "solver_called": att.get("called"),
+            "solver_input_path": str(expected.relative_to(run_dir)),
+            "solver_input_sha256": att.get("solver_input_sha256"),
+            "solver_input_status": att.get("solver_input_status"),
+            "solver_input_file_sha256": (hashlib.sha256(expected.read_bytes()).hexdigest()
+                                         if expected.is_file() else None),
+        }
+
+        def verdict(check, reason=""):
+            entry["solver_input_check"], entry["solver_input_reason"] = check, reason
+
+        recorded_path = att.get("solver_input_path")
+        if call is None:
+            verdict("MAPPING_MISMATCH", f"request_index {req!r} has no Runner CBS call")
+        elif "solver_input_status" not in att:
+            verdict("UNRECORDED", "attempt record has no solver-input fields")
+        elif att.get("called") is not True:
+            if expected.exists() or recorded_path is not None or att.get("solver_input_sha256") is not None:
+                verdict("MAPPING_MISMATCH", "no solver call recorded, yet a solver input exists / is recorded")
+            else:
+                verdict("NOT_CALLED", att.get("solver_input_status") or "")
+        elif recorded_path is not None and Path(recorded_path).resolve() != expected.resolve():
+            verdict("MAPPING_MISMATCH", f"recorded {recorded_path} is not this attempt's call directory")
+        elif entry["solver_input_file_sha256"] is None:
+            verdict("MISSING", f"solver input not found (recorded status {att.get('solver_input_status')})")
+        elif att.get("solver_input_sha256") is None:
+            verdict("UNRECORDED", f"file exists but no sha256 was recorded "
+                                  f"(status {att.get('solver_input_status')})")
+        elif att["solver_input_sha256"] != entry["solver_input_file_sha256"]:
+            verdict("MISMATCH", "file sha256 differs from the one recorded when the run ended")
+        else:
+            try:
+                starts, goals = _input_cells(expected.read_bytes())
+                group = list(att.get("group") or [])
+                want = (sorted(_cell(rec.trajectory[t], a) for a in group),
+                        sorted(_cell(rec.goals, a) for a in group))
+            except Exception as exc:   # unreadable file / record: never counted as verified
+                verdict("MAPPING_MISMATCH", f"cannot compare input with the attempt: {type(exc).__name__}")
+            else:
+                if (starts, goals) != want:
+                    verdict("MAPPING_MISMATCH", "input starts/goals are not this attempt's group at S_t")
+                else:
+                    verdict("VERIFIED")
+        out.append(entry)
+    for path in sorted(root.glob(f"*/*/{Path(*SOLVER_INPUT_PARTS).as_posix()}")) if root.is_dir() else []:
+        if path.resolve() not in claimed:
+            out.append({"run_id": rec.run_id, "method": rec.method, "call_index": None,
+                        "attempt_index": None, "solver_input_path": str(path.relative_to(run_dir)),
+                        "solver_input_file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "solver_input_check": "UNCLAIMED_FILE",
+                        "solver_input_reason": "no Selective attempt owns this solver input"})
+    return out
+
+
+def solver_input_problems(states) -> List[str]:
+    """Reasons from Selective solver-input checks ([] = all verified / not called).
+
+    Entries without ``solver_input_check`` (the default methods) are not judged here.
+    """
+    return [f"solver input {s['run_id']} request {s.get('call_index')} attempt {s.get('attempt_index')}: "
+            f"{s['solver_input_check']} {s.get('solver_input_reason', '')}".rstrip()
+            for s in states if "solver_input_check" in s and s["solver_input_check"] not in SOLVER_INPUT_OK]
 
 
 # -- Output path length (Windows MAX_PATH) ----------------------------------------

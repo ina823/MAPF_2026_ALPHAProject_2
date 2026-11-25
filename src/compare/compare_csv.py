@@ -37,11 +37,13 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
 
 from src.compare.common_runner import (
+    SELECTIVE_HYBRID_DEV,
     CBS_METHODS,
     GLOBAL_HYBRID_DEV_FULL,
     GLOBAL_HYBRID_DEV_H3,
@@ -87,15 +89,20 @@ REQUEST_KIND = {
     GLOBAL_HYBRID_DEV_FULL: "IL_STALL_TRIGGER",
     GLOBAL_HYBRID_DEV_H3: "IL_STALL_TRIGGER",
     GLOBAL_HYBRID_DEV_H3_REARM: "IL_STALL_TRIGGER",
+    SELECTIVE_HYBRID_DEV: "SELECTIVE_TRIGGER",
 }
 EXEC_POLICY = {
     PURE_CBS_DEV_SINGLE_PLAN: "DEV_SINGLE_PLAN_FULL",
     GLOBAL_HYBRID_DEV_FULL: "DEV_FULL_PATH",
     GLOBAL_HYBRID_DEV_H3: "DEV_FIXED_H_EXEC",
     GLOBAL_HYBRID_DEV_H3_REARM: "DEV_FIXED_H_EXEC",
+    SELECTIVE_HYBRID_DEV: "DEV_FIXED_H_EXEC",
 }
-FIXED_H_EXEC_METHODS = (GLOBAL_HYBRID_DEV_H3, GLOBAL_HYBRID_DEV_H3_REARM)
-
+FIXED_H_EXEC_METHODS = (
+    GLOBAL_HYBRID_DEV_H3,
+    GLOBAL_HYBRID_DEV_H3_REARM,
+    SELECTIVE_HYBRID_DEV,
+)
 
 class CompareCsvError(HybridCsvError):
     """A run cannot be turned into comparison rows without guessing."""
@@ -190,11 +197,121 @@ def _check_run_files(record):
     for e in record.cbs_exec_trace:
         if e["actual"] != record.trajectory[e["t"]] or e["match"] != (e["expected"] == e["actual"]):
             _fail(run_id, f"CBS trace entry t={e['t']} inconsistent with the trajectory")
-    if record.method in CBS_METHODS:
-        work_dirs = sorted(p.name for p in (run_dir / "cbs").iterdir()) if (run_dir / "cbs").is_dir() else []
-        if len(work_dirs) != len(record.cbs_calls) or len(record.planner_calls) != len(record.cbs_calls):
-            _fail(run_id, "solver work dirs / planner calls / CBS calls do not match one to one")
+
+
+    # 기존 CBS 작업 디렉터리 무결성 검사
+    if record.method in CBS_METHODS and record.method != SELECTIVE_HYBRID_DEV:
+
+        legacy_cbs_dir = run_dir / "cbs"
+
+        legacy_work_dirs = (
+            [p for p in legacy_cbs_dir.iterdir() if p.is_dir()]
+            if legacy_cbs_dir.is_dir()
+            else []
+        )
+
+        if (
+            len(legacy_work_dirs) != len(record.cbs_calls)
+            or len(record.planner_calls) != len(record.cbs_calls)
+        ):
+            _fail(
+                run_id,
+                "solver work dirs / planner calls / CBS calls do not match one to one"
+            )
     return by_t, summary
+
+SELECTIVE_ATTEMPT_KEYS = (
+    "request_index", "attempt_index", "request_attempt_count", "request_trigger_t", "request_outcome",
+    "request_returned_status", "level", "group", "status", "ladder_status", "called",
+    "solver_invoked", "returned_plan", "latency_ms", "paths",
+)
+
+
+def selective_returned_attempts(run_id, calls, planner_calls):
+    """SELECTIVE_HYBRID_DEV: the attempt whose plan each Runner call received.
+
+    ``calls`` are the Runner's CBS requests (``record.cbs_calls``, 1-based
+    ``index``) and ``planner_calls`` the ladder attempts from
+    ``selective_cbs_calls``, matched by ``request_index`` / ``attempt_index``
+    -- never by position, since one request can hold several attempts
+    (L0 timeout -> G, L0 failure -> L1, ...). Returns {call index: attempt or
+    None}; None = the planner returned no plan (SAFE_STOP). Refused
+    (CompareCsvError): a missing, duplicated, extra or reordered attempt, a
+    request without attempts, an attempt without a solver call that reports a
+    solver result, a failed attempt that carries paths, a returned plan that
+    is not the request's last successful real call, a Runner status / latency
+    / trigger time that differs from the planner's record.
+    """
+    for p in planner_calls:
+        missing = [k for k in SELECTIVE_ATTEMPT_KEYS if k not in p]
+        if missing:
+            _fail(run_id, f"Selective attempt record incomplete (missing {missing})")
+    keys = [(p["request_index"], p["attempt_index"]) for p in planner_calls]
+    if len(set(keys)) != len(keys):
+        _fail(run_id, f"Selective attempt recorded twice: {sorted(k for k in set(keys) if keys.count(k) > 1)}")
+    if keys != sorted(keys):
+        _fail(run_id, f"Selective attempts out of request / attempt order: {keys}")
+    by_request = {}
+    for p in planner_calls:
+        by_request.setdefault(p["request_index"], []).append(p)
+    indices = [c["index"] for c in calls]
+    extra = sorted(set(by_request) - set(indices))
+    if extra:
+        _fail(run_id, f"Selective attempts for requests the Runner never made: {extra}")
+
+    returned = {}
+    for call in calls:
+        i = call["index"]
+        atts = by_request.get(i)
+        if not atts:
+            _fail(run_id, f"request {i}: CBS call record missing (no Selective attempt recorded)")
+        head = atts[0]
+        for key in ("request_attempt_count", "request_trigger_t", "request_outcome", "request_returned_status"):
+            if any(a[key] != head[key] for a in atts):
+                _fail(run_id, f"request {i}: attempts disagree on {key}")
+        if [a["attempt_index"] for a in atts] != list(range(1, head["request_attempt_count"] + 1)):
+            _fail(run_id, f"request {i}: attempts {[a['attempt_index'] for a in atts]} recorded, "
+                          f"planner made {head['request_attempt_count']}")
+        if head["request_trigger_t"] is not None and head["request_trigger_t"] != call["trigger_timestep"]:
+            _fail(run_id, f"request {i}: planner trigger t={head['request_trigger_t']} != "
+                          f"Runner t={call['trigger_timestep']}")
+        if call["status"] != head["request_returned_status"]:
+            _fail(run_id, f"request {i}: Runner status {call['status']!r} != planner returned "
+                          f"{head['request_returned_status']!r}")
+        for a in atts:
+            where = f"request {i} attempt {a['attempt_index']} ({a['level']})"
+            if a["called"] not in (True, False):
+                _fail(run_id, f"{where}: unknown whether the solver was called ({a['called']!r})")
+            if a["solver_invoked"] is not None and a["solver_invoked"] != a["called"]:
+                _fail(run_id, f"{where}: planner and adapter disagree on whether the solver ran")
+            if not a["called"] and (a["status"] == "success" or a["paths"] is not None):
+                _fail(run_id, f"{where}: no solver call, yet a solver result is recorded")
+            if a["status"] != "success" and a["paths"] is not None:
+                _fail(run_id, f"{where}: status {a['status']!r} but paths recorded")
+            if a["ladder_status"] == "success" and a["status"] != "success":
+                _fail(run_id, f"{where}: ladder saw success, solver reported {a['status']!r}")
+        plans = [a for a in atts if a["returned_plan"]]
+        outcome = head["request_outcome"] or ""
+        if outcome.startswith("EXECUTE:"):
+            if len(plans) != 1 or plans[0] is not atts[-1]:
+                _fail(run_id, f"request {i}: {outcome} must return exactly its last attempt")
+            plan = plans[0]
+            if (f"EXECUTE:{plan['level']}" != outcome or not plan["called"] or plan["status"] != "success"
+                    or plan["ladder_status"] != "success" or not plan["paths"]):
+                _fail(run_id, f"request {i}: returned plan is not a successful real {outcome[8:]} call")
+            returned[i] = plan
+        else:
+            if plans:
+                _fail(run_id, f"request {i}: {outcome or 'no outcome'} but an attempt is marked as returned")
+            if call["accepted"]:
+                _fail(run_id, f"request {i}: Runner accepted a plan the planner never returned")
+            returned[i] = None
+        lats = [a["latency_ms"] for a in atts]
+        total = None if any(v is None for v in lats) else sum(lats)
+        if (total is None) != (call["latency_ms"] is None) or (
+                total is not None and not math.isclose(total, call["latency_ms"], rel_tol=1e-9, abs_tol=1e-6)):
+            _fail(run_id, f"request {i}: Runner latency {call['latency_ms']!r} ms != summed attempts {total!r} ms")
+    return returned
 
 
 def build_rows(record, batch_id):
@@ -214,14 +331,56 @@ def build_rows(record, batch_id):
             owned = attribute_trace(run_id, calls, record.cbs_exec_trace)
         except HybridCsvError as exc:
             raise CompareCsvError(str(exc)) from exc
-        for call, pcall in zip(calls, record.planner_calls):
+        if method == SELECTIVE_HYBRID_DEV:
+            # one request may hold several attempts: match by request / attempt index,
+            # and only the returned (successful) attempt's paths can own CBS steps
+            returned = selective_returned_attempts(run_id, calls, record.planner_calls)
+            pairs = [(c, returned[c["index"]] or {"paths": None, "group": ()}) for c in calls]
+        else:
+            pairs = zip(calls, record.planner_calls)
+        for call, pcall in pairs:
             entries = owned[call["index"]]
             paths = pcall["paths"] if call["accepted"] else None
             if paths:
                 if any(paths[a][0] != record.trajectory[call["trigger_timestep"]][a] for a in paths):
                     _fail(run_id, f"call {call['index']}: accepted Path[0] differs from the request state")
-                if entries and entries[0]["expected"] != {a: p[min(1, len(p) - 1)] for a, p in paths.items()}:
-                    _fail(run_id, f"call {call['index']}: first CBS step is not Path[1]")
+                if method == SELECTIVE_HYBRID_DEV:
+                    s_t = record.trajectory[call["trigger_timestep"]]
+
+                    if set(paths) != set(pcall["group"]):
+                        _fail(run_id, "Selective CBS group mismatch")
+
+                    for e in entries:
+                        k = e["k"]
+                        expected = e["expected"]
+
+                        if set(expected) != set(record.goals):
+                            _fail(run_id, "Incomplete CBS expected state")
+
+                        for a, path in paths.items():
+                            pos = path[min(k, len(path) - 1)]
+                            if expected[a] != pos:
+                                _fail(run_id, "Subset CBS path mismatch")
+
+                        for a in record.goals:
+                            if a not in paths and expected[a] != s_t[a]:
+                                _fail(run_id, "Outside agent moved during CBS")
+
+                        if (
+                            not e["match"]
+                            or e["overlap"]
+                            or e["actual"] != expected
+                        ):
+                            _fail(run_id, "CBS execution integrity failure")
+
+                elif entries and entries[0]["expected"] != {
+                    a: p[min(1, len(p) - 1)]
+                    for a, p in paths.items()
+                }:
+                    _fail(
+                        run_id,
+                        f"call {call['index']}: first CBS step is not Path[1]"
+                    )
                 horizon = max(len(p) for p in paths.values()) - 1
             else:
                 horizon = None

@@ -60,13 +60,15 @@ PURE_CBS_DEV_SINGLE_PLAN = "PURE_CBS_DEV_SINGLE_PLAN"
 GLOBAL_HYBRID_DEV_FULL = "GLOBAL_HYBRID_DEV_FULL"
 GLOBAL_HYBRID_DEV_H3 = "GLOBAL_HYBRID_DEV_H3"
 GLOBAL_HYBRID_DEV_H3_REARM = "GLOBAL_HYBRID_DEV_H3_REARM"
+SELECTIVE_HYBRID_DEV = "SELECTIVE_HYBRID_DEV"
+
 METHODS = (IL_ONLY, SAFETY_ONLY_DEV_K2, PURE_CBS_DEV_SINGLE_PLAN, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3)
-OPT_IN_METHODS = (GLOBAL_HYBRID_DEV_H3_REARM,)   # run only when named explicitly
+OPT_IN_METHODS = (GLOBAL_HYBRID_DEV_H3_REARM,  SELECTIVE_HYBRID_DEV)   # run only when named explicitly
 ALL_METHODS = METHODS + OPT_IN_METHODS
 CBS_METHODS = (PURE_CBS_DEV_SINGLE_PLAN, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3,
-               GLOBAL_HYBRID_DEV_H3_REARM)
+               GLOBAL_HYBRID_DEV_H3_REARM,SELECTIVE_HYBRID_DEV,)
 IL_METHODS = (IL_ONLY, SAFETY_ONLY_DEV_K2, GLOBAL_HYBRID_DEV_FULL, GLOBAL_HYBRID_DEV_H3,
-              GLOBAL_HYBRID_DEV_H3_REARM)
+              GLOBAL_HYBRID_DEV_H3_REARM,SELECTIVE_HYBRID_DEV,)
 NOT_IMPLEMENTED = ("SELECTIVE_HYBRID", "SELECTIVE_WFG", "WFG")
 
 DEFAULT_MAX_STEPS = 160
@@ -106,6 +108,16 @@ DEV_SETTINGS = {
         "rearm_limits": "filled per run from dev_rearm_config (max_cbs_calls includes the first call)",
         "on_refusal": "SAFE_STOP: RECALL_LIMIT_EXCEEDED / CBS_TIME_BUDGET_EXCEEDED / "
                       "RECALL_COOLDOWN_ACTIVE / RECALL_SAME_STATE",
+        "status": NOT_AGREED,
+    },
+    SELECTIVE_HYBRID_DEV: {
+        "h_exec": H_EXEC_DEV,
+        # trigger K / level timeouts / reserve are owned by
+        # src.compare.selective_bridge and merged into dev_settings per run
+        "ladder": ["L0", "L1", "G"],
+        "total_budget_ms": 30000.0,
+        "max_attempts": 3,
+        "outside_wait_policy": "DEV_UNVERIFIED",
         "status": NOT_AGREED,
     },
 }
@@ -280,9 +292,26 @@ def _check_spec(spec):
             raise ValueError("cbs_timeout_sec must be an int >= 1")
 
 
+def method_dev_settings(method):
+    """The DEV settings recorded for ``method`` (a fresh copy).
+
+    Default methods: ``DEV_SETTINGS[method]`` unchanged, no extra import.
+    SELECTIVE_HYBRID_DEV only: merged with the bridge-owned settings and
+    checked against what the bridge will apply (ValueError on any missing
+    or differing value) -- the bridge is imported only in this case.
+    """
+    settings = dict(DEV_SETTINGS[method])
+    if method == SELECTIVE_HYBRID_DEV:
+        from src.compare.selective_bridge import selective_extra_settings, validate_selective_dev_settings
+        settings.update(selective_extra_settings())
+        validate_selective_dev_settings(settings)
+    return settings
+
+
 def run_method(spec: RunSpec) -> EpisodeRecord:
     """Run one scenario with one method into a new run directory."""
     _check_spec(spec)
+    dev_settings = method_dev_settings(spec.method)   # before any run directory exists
 
     from scripts.run_corridor_hybrid_e2e import dev_config
     from scripts.run_hybrid_resume_dev import dev_rearm_config, dev_resume_config
@@ -313,7 +342,11 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
                                  timeout_sec=spec.cbs_timeout_sec)
 
     safety = None
-    planner = cbs_planner() if spec.method in CBS_METHODS else None
+    planner = (
+        cbs_planner()
+        if spec.method in CBS_METHODS and spec.method != SELECTIVE_HYBRID_DEV
+        else None
+    )
     if spec.method == IL_ONLY:
         raw = run_episode(il_policy(), grid, starts, goals, spec.max_steps, logger=logger, monitor=monitor)
     elif spec.method == SAFETY_ONLY_DEV_K2:
@@ -323,6 +356,25 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
     elif spec.method == PURE_CBS_DEV_SINGLE_PLAN:
         raw = run_pure_cbs_episode(grid, starts, goals, spec.max_steps, planner=planner,
                                    path_validator=PathGuardValidator(), monitor=monitor, logger=logger)
+    elif spec.method == SELECTIVE_HYBRID_DEV:
+        # opt-in only: Selective modules are imported when this method is named
+        from src.compare.selective_bridge import run_selective_compare_episode
+
+        settings = dev_settings   # validated by method_dev_settings
+        raw, monitor, planner = run_selective_compare_episode(
+            grid=grid,
+            starts=starts,
+            goals=goals,
+            solver_root=spec.solver_root,
+            work_dir=run_dir / "selective_cbs",
+            checkpoint=ckpt,
+            max_steps=spec.max_steps,
+            h_exec=settings["h_exec"],
+            total_budget_ms=settings["total_budget_ms"],
+            max_attempts=settings["max_attempts"],
+            monitor=monitor,
+            logger=logger,
+        )
     else:
         if spec.method == GLOBAL_HYBRID_DEV_FULL:
             config = dev_config(spec.max_steps)
@@ -376,9 +428,20 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
             "rearm_config": raw["rearm_config"],
         })
 
-    dev_settings = dict(DEV_SETTINGS[spec.method])
     if spec.method == GLOBAL_HYBRID_DEV_H3_REARM:
         dev_settings["rearm_limits"] = dict(raw["rearm_config"])
+    if spec.method == SELECTIVE_HYBRID_DEV:
+        from src.compare.selective_bridge import (check_selective_settings, selective_applied_settings,
+                                                  selective_cbs_calls)
+        applied = selective_applied_settings(planner, raw)
+        mismatches = check_selective_settings(dev_settings, applied)
+        if mismatches:
+            raise RuntimeError(f"{run_id}: recorded Selective settings differ from the applied ones: "
+                               + "; ".join(mismatches))
+        dev_settings["applied"] = applied
+        planner_calls = selective_cbs_calls(planner)
+    else:
+        planner_calls = _planner_calls(planner)
     record = EpisodeRecord(
         method=spec.method,
         dev_settings=dev_settings,
@@ -408,7 +471,7 @@ def run_method(spec: RunSpec) -> EpisodeRecord:
         overlap_checked_at_runtime=checked,
         integrity_unhandled=(not checked) and first_overlap is not None,
         cbs_calls=list(raw.get("cbs_calls", [])),
-        planner_calls=_planner_calls(planner),
+        planner_calls=planner_calls,
         cbs_exec_trace=list(raw.get("cbs_exec_trace", [])),
         transitions=list(raw.get("transitions", [])),
         safety_holds=list(safety.holds) if safety is not None else [],

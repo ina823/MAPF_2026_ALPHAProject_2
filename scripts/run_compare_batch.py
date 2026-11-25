@@ -17,7 +17,19 @@ run used the same scenario files, checkpoint, max_steps=160, solver_root,
 CBS timeout=30 s, project/solver commits and environment versions.
 
 CBS is asked at different times: Pure CBS once at t=0 on S_0
-(INITIAL_STATE); Global Hybrid after an IL stall Trigger (IL_STALL_TRIGGER).
+(INITIAL_STATE); Global Hybrid after an IL stall Trigger (IL_STALL_TRIGGER);
+the opt-in SELECTIVE_HYBRID_DEV after a Selective (partial / IL stall) Trigger,
+on a subset or global ladder attempt (SELECTIVE_TRIGGER).
+
+SELECTIVE_HYBRID_DEV only: its manifest entry also carries the settings read
+back from the objects every run actually used (applied_settings), checked
+against the recorded DEV settings and the bridge's planned settings; any
+mismatch is listed and makes the batch unfair. Its per-level / total time
+limits are recorded apart from cbs_timeout_sec, which it does not apply.
+Its cbs_request_states hold one entry per ladder attempt (subset and global
+CBS): the raw-byte sha256 of the solver_input.yaml recorded when the run
+ended, re-hashed when the manifest is written and matched to the attempt;
+a missing, changed or mis-mapped input makes the batch not reproducible.
 All method settings except IL_ONLY are DEV settings, not agreed policies, and
 every scenario here is a Development scenario (no Validation / Test data).
 
@@ -60,8 +72,10 @@ from src.compare.common_runner import (
     ALL_METHODS,
     METHODS,
     NOT_IMPLEMENTED,
+    SELECTIVE_HYBRID_DEV,
     RunSpec,
     environment_info,
+    method_dev_settings,
     run_method,
 )
 from src.compare.compare_csv import (
@@ -192,6 +206,31 @@ def main(argv=None):
     if seed_consistency:   # a seed that changed between runs / CBS calls: not one comparison
         fair, reasons = False, list(reasons) + seed_consistency
     reproducibility = provenance.reproducibility_record(parent_seed, seed_layers, seed_consistency)
+    request_states = provenance.cbs_request_states(records)
+    if SELECTIVE_HYBRID_DEV in args.methods:
+        # Selective only: every real solver input re-hashed and matched to its attempt;
+        # a missing / changed / mis-mapped input is not a reproducible batch
+        input_problems = provenance.solver_input_problems(request_states)
+        reproducibility["solver_inputs_verified"] = not input_problems
+        if input_problems:
+            reproducibility["reproducible_batch"] = False
+            reproducibility["reasons"] = list(reproducibility["reasons"]) + input_problems
+
+    methods = {m: {"dev_settings": DEV_SETTINGS[m], "cbs_request_kind": REQUEST_KIND.get(m)}
+               for m in args.methods}
+    if SELECTIVE_HYBRID_DEV in methods:   # opt-in only: the bridge is imported when named
+        from src.compare.selective_bridge import selective_manifest_entry
+
+        recorded = method_dev_settings(SELECTIVE_HYBRID_DEV)
+        entry = selective_manifest_entry(
+            recorded, [r for r in records if r.method == SELECTIVE_HYBRID_DEV],
+            batch_cbs_timeout_sec=args.cbs_timeout_sec)
+        methods[SELECTIVE_HYBRID_DEV] = {"dev_settings": recorded,
+                                         "cbs_request_kind": REQUEST_KIND.get(SELECTIVE_HYBRID_DEV),
+                                         **entry}
+        if entry["applied_settings_mismatches"]:
+            fair, reasons = False, list(reasons) + [f"Selective settings: {r}"
+                                                    for r in entry["applied_settings_mismatches"]]
 
     manifest = {
         "batch_id": batch_id,
@@ -207,11 +246,13 @@ def main(argv=None):
             "checkpoint_sha256": ckpt_sha,
             "scenarios": {Path(s).name: common_runner._sha256_file(s) for s in args.scenarios},
         },
-        "methods": {m: {"dev_settings": DEV_SETTINGS[m], "cbs_request_kind": REQUEST_KIND.get(m)}
-                    for m in args.methods},
+        "methods": methods,
         "cbs_request_timing": {
             "INITIAL_STATE": "Pure CBS: one call at t=0 on S_0, whole plan executed",
             "IL_STALL_TRIGGER": "Global Hybrid: call after an IL stall Trigger at t >= 1",
+            **({"SELECTIVE_TRIGGER": "Selective Hybrid (DEV, opt-in): subset / global ladder attempts "
+                                     "after a partial or IL stall Trigger at t >= 1"}
+               if SELECTIVE_HYBRID_DEV in args.methods else {}),
         },
         "solver_latency_ms": "replan_with_status perf_counter span; not pure CBS search time",
         "run_order": [r.run_id for r in records],
@@ -219,8 +260,10 @@ def main(argv=None):
         "fair_batch": fair,
         "fairness_reasons": reasons,
         "reproducibility": reproducibility,
-        "cbs_request_states": provenance.cbs_request_states(records),
+        "cbs_request_states": request_states,
         "cbs_request_states_note": provenance.REQUEST_STATES_NOTE,
+        **({"selective_solver_inputs_note": provenance.SELECTIVE_INPUTS_NOTE}
+           if SELECTIVE_HYBRID_DEV in args.methods else {}),
         "csv_cell_checks": checks,
         "csv_vs_runner_checks": runner_checks,
     }
